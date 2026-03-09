@@ -63,6 +63,12 @@ import {
   replaceTextRange,
 } from "../composer-logic";
 import {
+  collectComposerHistoryEntries,
+  EMPTY_COMPOSER_HISTORY_STATE,
+  isComposerHistoryBoundary,
+  navigateComposerHistory,
+} from "../composer-history";
+import {
   derivePendingApprovals,
   derivePendingUserInputs,
   derivePhase,
@@ -87,6 +93,7 @@ import {
   setPendingUserInputCustomAnswer,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
+import { resolveVisibleProviderHealthStatus } from "../providerHealth";
 import { useStore } from "../store";
 import {
   buildPlanImplementationThreadTitle,
@@ -105,6 +112,7 @@ import {
   MAX_THREAD_TERMINAL_COUNT,
   type ChatMessage,
   type Thread,
+  type ThreadSession,
   type TurnDiffFileChange,
   type TurnDiffSummary,
 } from "../types";
@@ -674,6 +682,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerFormHeightRef = useRef(0);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const composerHistoryStateRef = useRef(EMPTY_COMPOSER_HISTORY_STATE);
+  const applyingComposerHistoryRef = useRef(false);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
@@ -1074,6 +1084,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
+  const composerHistoryEntries = useMemo(
+    () => collectComposerHistoryEntries(timelineMessages),
+    [timelineMessages],
+  );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
@@ -1269,6 +1283,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
     [activeProvider, providerStatuses],
   );
+  const visibleActiveProviderStatus = useMemo(
+    () =>
+      resolveVisibleProviderHealthStatus({
+        status: activeProviderStatus,
+        activeSession: activeThread?.session as ThreadSession | null | undefined,
+        codexBinaryPath: settings.codexBinaryPath,
+      }),
+    [activeProviderStatus, activeThread?.session, settings.codexBinaryPath],
+  );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const threadTerminalRuntimeEnv = useMemo(() => {
@@ -1339,6 +1362,25 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const focusComposer = useCallback(() => {
     composerEditorRef.current?.focusAtEnd();
   }, []);
+  const resetComposerHistoryNavigation = useCallback(() => {
+    composerHistoryStateRef.current = EMPTY_COMPOSER_HISTORY_STATE;
+  }, []);
+  const applyComposerHistorySnapshot = useCallback(
+    (next: { value: string; cursor: number }) => {
+      applyingComposerHistoryRef.current = true;
+      promptRef.current = next.value;
+      setPrompt(next.value);
+      setComposerCursor(next.cursor);
+      setComposerHighlightedItemId(null);
+      setComposerTrigger(
+        detectComposerTrigger(next.value, expandCollapsedComposerCursor(next.value, next.cursor)),
+      );
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(next.cursor);
+      });
+    },
+    [setPrompt],
+  );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -2442,6 +2484,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       });
       promptRef.current = "";
       clearComposerDraftContent(activeThread.id);
+      resetComposerHistoryNavigation();
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
@@ -2457,6 +2500,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       await handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(activeThread.id);
+      resetComposerHistoryNavigation();
       setComposerHighlightedItemId(null);
       setComposerCursor(0);
       setComposerTrigger(null);
@@ -2524,6 +2568,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setThreadError(threadIdForSend, null);
     promptRef.current = "";
     clearComposerDraftContent(threadIdForSend);
+    resetComposerHistoryNavigation();
     setComposerHighlightedItemId(null);
     setComposerCursor(0);
     setComposerTrigger(null);
@@ -2694,6 +2739,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
         promptRef.current = trimmed;
         setPrompt(trimmed);
+        resetComposerHistoryNavigation();
         setComposerCursor(trimmed.length);
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
         setComposerTrigger(detectComposerTrigger(trimmed, trimmed.length));
@@ -3311,6 +3357,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
         );
         return;
       }
+      if (applyingComposerHistoryRef.current) {
+        applyingComposerHistoryRef.current = false;
+      } else {
+        resetComposerHistoryNavigation();
+      }
       promptRef.current = nextPrompt;
       setPrompt(nextPrompt);
       setComposerCursor(nextCursor);
@@ -3327,6 +3378,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
       onChangeActivePendingUserInputCustomAnswer,
+      resetComposerHistoryNavigation,
       setPrompt,
     ],
   );
@@ -3362,12 +3414,48 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
     }
 
+    if (
+      (key === "ArrowUp" || key === "ArrowDown") &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !isComposerApprovalState &&
+      !activePendingProgress &&
+      composerImagesRef.current.length === 0
+    ) {
+      const direction = key === "ArrowUp" ? "previous" : "next";
+      const snapshot = readComposerSnapshot();
+      const isNavigatingHistory = composerHistoryStateRef.current.index !== null;
+      if (isNavigatingHistory || isComposerHistoryBoundary(snapshot, direction)) {
+        const navigation = navigateComposerHistory({
+          direction,
+          entries: composerHistoryEntries,
+          snapshot,
+          state: composerHistoryStateRef.current,
+        });
+        if (navigation) {
+          composerHistoryStateRef.current = navigation.state;
+          applyComposerHistorySnapshot(navigation.snapshot);
+          return true;
+        }
+      }
+    }
+
     if (key === "Enter" && !event.shiftKey) {
       void onSend();
       return true;
     }
     return false;
   };
+  useEffect(() => {
+    resetComposerHistoryNavigation();
+  }, [resetComposerHistoryNavigation, threadId]);
+  useEffect(() => {
+    if (composerImages.length > 0) {
+      resetComposerHistoryNavigation();
+    }
+  }, [composerImages.length, resetComposerHistoryNavigation]);
   const onToggleWorkGroup = useCallback((groupId: string) => {
     setExpandedWorkGroups((existing) => ({
       ...existing,
@@ -3462,7 +3550,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       </header>
 
       {/* Error banner */}
-      <ProviderHealthBanner status={activeProviderStatus} />
+      <ProviderHealthBanner status={visibleActiveProviderStatus} />
       <ThreadErrorBanner
         error={activeThread.error}
         onDismiss={() => setThreadError(activeThread.id, null)}

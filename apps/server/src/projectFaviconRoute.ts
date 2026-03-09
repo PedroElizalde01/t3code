@@ -51,6 +51,17 @@ const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
 const LINK_ICON_OBJ_RE =
   /(?=[^}]*\brel\s*:\s*["'](?:icon|shortcut icon)["'])(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*/i;
+const VITE_ENV_PLACEHOLDER_RE = /^%([A-Z0-9_]+)%$/i;
+const REMOTE_ICON_PROTOCOLS = new Set(["http:", "https:"]);
+const ENV_FILES = [
+  ".env",
+  ".env.local",
+  ".env.development",
+  ".env.development.local",
+  ".env.production",
+  ".env.production.local",
+] as const;
+const MONOREPO_APP_ROOTS = ["apps", "packages"] as const;
 
 function extractIconHref(source: string): string | null {
   const htmlMatch = source.match(LINK_ICON_HTML_RE);
@@ -60,9 +71,96 @@ function extractIconHref(source: string): string | null {
   return null;
 }
 
+function parseEnvFile(content: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const rawLine of content.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith("#")) {
+      continue;
+    }
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, equalsIndex).trim();
+    if (key.length === 0) {
+      continue;
+    }
+    let value = line.slice(equalsIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    values.set(key, value);
+  }
+  return values;
+}
+
+function resolveEnvPlaceholder(projectCwd: string, href: string): string {
+  const match = VITE_ENV_PLACEHOLDER_RE.exec(href.trim());
+  if (!match?.[1]) {
+    return href;
+  }
+  let resolved = href;
+  for (const envFile of ENV_FILES) {
+    const envPath = path.join(projectCwd, envFile);
+    try {
+      const content = fs.readFileSync(envPath, "utf8");
+      const next = parseEnvFile(content).get(match[1]);
+      if (typeof next === "string" && next.trim().length > 0) {
+        resolved = next.trim();
+      }
+    } catch {
+      continue;
+    }
+  }
+  return resolved;
+}
+
 function resolveIconHref(projectCwd: string, href: string): string[] {
   const clean = href.replace(/^\//, "");
   return [path.join(projectCwd, "public", clean), path.join(projectCwd, clean)];
+}
+
+function discoverIconSearchRoots(projectCwd: string): string[] {
+  const roots = [projectCwd];
+  const seen = new Set(roots.map((root) => path.resolve(root)));
+
+  for (const parentDir of MONOREPO_APP_ROOTS) {
+    const parentPath = path.join(projectCwd, parentDir);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(parentPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const candidate = path.join(parentPath, entry.name);
+      const resolved = path.resolve(candidate);
+      if (seen.has(resolved)) {
+        continue;
+      }
+      seen.add(resolved);
+      roots.push(candidate);
+    }
+  }
+
+  return roots;
+}
+
+function isRemoteIconUrl(candidate: string): boolean {
+  try {
+    const url = new URL(candidate);
+    return REMOTE_ICON_PROTOCOLS.has(url.protocol);
+  } catch {
+    return false;
+  }
 }
 
 function isPathWithinProject(projectCwd: string, candidatePath: string): boolean {
@@ -95,6 +193,35 @@ function serveFallbackFavicon(res: http.ServerResponse): void {
   res.end(FALLBACK_FAVICON_SVG);
 }
 
+async function serveRemoteFavicon(remoteUrl: string, res: http.ServerResponse): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(remoteUrl, {
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const contentType =
+      response.headers.get("content-type") ??
+      FAVICON_MIME_TYPES[path.extname(new URL(remoteUrl).pathname).toLowerCase()] ??
+      "application/octet-stream";
+    const body = Buffer.from(await response.arrayBuffer());
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "public, max-age=3600",
+    });
+    res.end(body);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function tryHandleProjectFaviconRequest(url: URL, res: http.ServerResponse): boolean {
   if (url.pathname !== "/api/project-favicon") {
     return false;
@@ -106,6 +233,7 @@ export function tryHandleProjectFaviconRequest(url: URL, res: http.ServerRespons
     res.end("Missing cwd parameter");
     return true;
   }
+  const iconSearchRoots = discoverIconSearchRoots(projectCwd);
 
   const tryResolvedPaths = (paths: string[], index: number, onExhausted: () => void): void => {
     if (index >= paths.length) {
@@ -126,46 +254,65 @@ export function tryHandleProjectFaviconRequest(url: URL, res: http.ServerRespons
     });
   };
 
-  const trySourceFiles = (index: number): void => {
-    if (index >= ICON_SOURCE_FILES.length) {
+  const trySourceFiles = (rootIndex: number, sourceIndex: number): void => {
+    const searchRoot = iconSearchRoots[rootIndex];
+    if (!searchRoot) {
       serveFallbackFavicon(res);
       return;
     }
-    const sourceFile = path.join(projectCwd, ICON_SOURCE_FILES[index]!);
+    if (sourceIndex >= ICON_SOURCE_FILES.length) {
+      trySourceFiles(rootIndex + 1, 0);
+      return;
+    }
+    const sourceFile = path.join(searchRoot, ICON_SOURCE_FILES[sourceIndex]!);
     fs.readFile(sourceFile, "utf8", (err, content) => {
       if (err) {
-        trySourceFiles(index + 1);
+        trySourceFiles(rootIndex, sourceIndex + 1);
         return;
       }
       const href = extractIconHref(content);
       if (!href) {
-        trySourceFiles(index + 1);
+        trySourceFiles(rootIndex, sourceIndex + 1);
         return;
       }
-      const candidates = resolveIconHref(projectCwd, href);
-      tryResolvedPaths(candidates, 0, () => trySourceFiles(index + 1));
+      const resolvedHref = resolveEnvPlaceholder(searchRoot, href);
+      if (isRemoteIconUrl(resolvedHref)) {
+        void serveRemoteFavicon(resolvedHref, res).then((served) => {
+          if (!served) {
+            trySourceFiles(rootIndex, sourceIndex + 1);
+          }
+        });
+        return;
+      }
+      const candidates = resolveIconHref(searchRoot, resolvedHref);
+      tryResolvedPaths(candidates, 0, () => trySourceFiles(rootIndex, sourceIndex + 1));
     });
   };
 
-  const tryCandidates = (index: number): void => {
-    if (index >= FAVICON_CANDIDATES.length) {
-      trySourceFiles(0);
+  const tryCandidates = (rootIndex: number, candidateIndex: number): void => {
+    const searchRoot = iconSearchRoots[rootIndex];
+    if (!searchRoot) {
+      trySourceFiles(0, 0);
       return;
     }
-    const candidate = path.join(projectCwd, FAVICON_CANDIDATES[index]!);
+    if (candidateIndex >= FAVICON_CANDIDATES.length) {
+      tryCandidates(rootIndex + 1, 0);
+      return;
+    }
+    const candidate = path.join(searchRoot, FAVICON_CANDIDATES[candidateIndex]!);
     if (!isPathWithinProject(projectCwd, candidate)) {
-      tryCandidates(index + 1);
+      tryCandidates(rootIndex, candidateIndex + 1);
       return;
     }
     fs.stat(candidate, (err, stats) => {
       if (err || !stats?.isFile()) {
-        tryCandidates(index + 1);
+        tryCandidates(rootIndex, candidateIndex + 1);
         return;
       }
       serveFaviconFile(candidate, res);
     });
   };
 
-  tryCandidates(0);
+  tryCandidates(0, 0);
   return true;
 }

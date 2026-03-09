@@ -399,6 +399,10 @@ async function waitForComposerEditor(): Promise<HTMLElement> {
   );
 }
 
+function readComposerText(): string {
+  return document.querySelector<HTMLElement>('[contenteditable="true"]')?.textContent ?? "";
+}
+
 async function waitForInteractionModeButton(expectedLabel: "Chat" | "Plan"): Promise<HTMLButtonElement> {
   return waitForElement(
     () =>
@@ -862,6 +866,144 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect((await waitForInteractionModeButton("Chat")).title).toContain("enter plan mode");
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("navigates sent message history with ArrowUp and ArrowDown", async () => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {
+        [THREAD_ID]: {
+          prompt: "unfinished draft",
+          images: [],
+          nonPersistedImageIds: [],
+          persistedAttachments: [],
+          provider: null,
+          model: null,
+          runtimeMode: null,
+          interactionMode: null,
+          effort: null,
+          codexFastMode: false,
+        },
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-target-history" as MessageId,
+        targetText: "history target",
+      }),
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+
+      await vi.waitFor(
+        () => {
+          expect(readComposerText()).toBe("unfinished draft");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowUp",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(readComposerText()).toBe("filler user message 21");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowUp",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(readComposerText()).toBe("filler user message 20");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(readComposerText()).toBe("filler user message 21");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(readComposerText()).toBe("unfinished draft");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides stale Codex PATH warnings when the active thread session is healthy", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-target-provider-health" as MessageId,
+        targetText: "provider health target",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              provider: "codex",
+              status: "error",
+              available: false,
+              authStatus: "unknown",
+              checkedAt: NOW_ISO,
+              message: "Codex CLI (`codex`) is not installed or not on PATH.",
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      await waitForLayout();
+
+      expect(document.body.textContent).not.toContain("Codex provider status");
+      expect(document.body.textContent).not.toContain(
+        "Codex CLI (`codex`) is not installed or not on PATH.",
       );
     } finally {
       await mounted.cleanup();

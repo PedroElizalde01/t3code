@@ -116,6 +116,100 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("resolves Vite-style env placeholders to local icon files", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-env-local-");
+    const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
+    fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, ".env"), "VITE_APP_LOGO_ICON=/brand/logo.svg\n", "utf8");
+    fs.writeFileSync(
+      path.join(projectDir, "index.html"),
+      '<link rel="icon" href="%VITE_APP_LOGO_ICON%">',
+      "utf8",
+    );
+    fs.writeFileSync(iconPath, "<svg>env-local</svg>", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toBe("<svg>env-local</svg>");
+    });
+  });
+
+  it("resolves Vite-style env placeholders to remote icon urls", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-env-remote-");
+    const remoteIconServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "image/svg+xml" });
+      res.end("<svg>env-remote</svg>");
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      remoteIconServer.listen(0, "127.0.0.1", (error?: Error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+    const address = remoteIconServer.address();
+    if (typeof address !== "object" || address === null) {
+      throw new Error("Expected remote icon server address to be an object");
+    }
+    const remoteIconUrl = `http://127.0.0.1:${address.port}/logo.svg`;
+
+    fs.writeFileSync(path.join(projectDir, ".env"), `VITE_APP_LOGO_ICON=${remoteIconUrl}\n`, "utf8");
+    fs.writeFileSync(
+      path.join(projectDir, "index.html"),
+      '<link rel="icon" href="%VITE_APP_LOGO_ICON%">',
+      "utf8",
+    );
+
+    try {
+      await withRouteServer(async (baseUrl) => {
+        const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+        const response = await request(baseUrl, pathname);
+        expect(response.statusCode).toBe(200);
+        expect(response.contentType).toContain("image/svg+xml");
+        expect(response.body).toBe("<svg>env-remote</svg>");
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        remoteIconServer.close((error?: Error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("finds nested monorepo app icons under apps/* roots", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-monorepo-");
+    const appDir = path.join(projectDir, "apps", "frontend");
+    const iconPath = path.join(appDir, "public", "brand", "logo.svg");
+    fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+    fs.writeFileSync(path.join(appDir, ".env"), "VITE_APP_LOGO_ICON=/brand/logo.svg\n", "utf8");
+    fs.writeFileSync(
+      path.join(appDir, "index.html"),
+      '<link rel="icon" href="%VITE_APP_LOGO_ICON%">',
+      "utf8",
+    );
+    fs.writeFileSync(iconPath, "<svg>monorepo-app</svg>", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toBe("<svg>monorepo-app</svg>");
+    });
+  });
+
   it("resolves icon link when href appears before rel in HTML", async () => {
     const projectDir = makeTempDir("t3code-favicon-route-html-order-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
