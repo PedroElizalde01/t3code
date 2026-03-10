@@ -85,6 +85,10 @@ function SettingsRouteView() {
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
+  const [notificationsError, setNotificationsError] = useState<string | null>(null);
+  const [desktopNotificationPermission, setDesktopNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() => (typeof Notification === "undefined" ? "unsupported" : Notification.permission));
   const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
     Record<ProviderKind, string>
   >({
@@ -97,6 +101,7 @@ function SettingsRouteView() {
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
+  const desktopNotificationsSupported = desktopNotificationPermission !== "unsupported";
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -177,6 +182,42 @@ function SettingsRouteView() {
       }));
     },
     [settings, updateSettings],
+  );
+
+  const handleCodexCompletionPopupNotificationsChange = useCallback(
+    async (checked: boolean) => {
+      setNotificationsError(null);
+
+      if (!checked) {
+        updateSettings({ enableCodexCompletionPopupNotifications: false });
+        return;
+      }
+
+      if (typeof Notification === "undefined") {
+        setDesktopNotificationPermission("unsupported");
+        setNotificationsError("Desktop notifications are not supported in this environment.");
+        return;
+      }
+
+      let permission = Notification.permission;
+      if (permission !== "granted") {
+        permission = await Notification.requestPermission();
+      }
+
+      setDesktopNotificationPermission(permission);
+      if (permission !== "granted") {
+        updateSettings({ enableCodexCompletionPopupNotifications: false });
+        setNotificationsError(
+          permission === "denied"
+            ? "Desktop notifications are blocked. Allow them in your browser or OS settings first."
+            : "Desktop notification permission is still pending.",
+        );
+        return;
+      }
+
+      updateSettings({ enableCodexCompletionPopupNotifications: true });
+    },
+    [updateSettings],
   );
 
   return (
@@ -431,6 +472,82 @@ function SettingsRouteView() {
                   );
                 })}
               </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Notifications</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose how ØRBIT alerts you when Codex finishes a turn.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Desktop pop-up</p>
+                    <p className="text-xs text-muted-foreground">
+                      Show a system notification when Codex finishes working.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.enableCodexCompletionPopupNotifications}
+                    disabled={!desktopNotificationsSupported}
+                    onCheckedChange={(checked) => {
+                      void handleCodexCompletionPopupNotificationsChange(Boolean(checked));
+                    }}
+                    aria-label="Desktop pop-up notifications for Codex completion"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Sound</p>
+                    <p className="text-xs text-muted-foreground">
+                      Play a short tone when Codex finishes working.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.enableCodexCompletionSound}
+                    onCheckedChange={(checked) =>
+                      updateSettings({
+                        enableCodexCompletionSound: Boolean(checked),
+                      })
+                    }
+                    aria-label="Sound notifications for Codex completion"
+                  />
+                </div>
+              </div>
+
+              {!desktopNotificationsSupported ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Desktop notifications are not available in this environment.
+                </p>
+              ) : null}
+
+              {notificationsError ? (
+                <p className="mt-3 text-xs text-destructive">{notificationsError}</p>
+              ) : null}
+
+              {settings.enableCodexCompletionPopupNotifications !==
+                defaults.enableCodexCompletionPopupNotifications ||
+              settings.enableCodexCompletionSound !== defaults.enableCodexCompletionSound ? (
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      updateSettings({
+                        enableCodexCompletionPopupNotifications:
+                          defaults.enableCodexCompletionPopupNotifications,
+                        enableCodexCompletionSound: defaults.enableCodexCompletionSound,
+                      })
+                    }
+                  >
+                    Restore default
+                  </Button>
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-2xl border border-border bg-card p-5">

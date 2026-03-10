@@ -11,6 +11,14 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 
 import { APP_DISPLAY_NAME } from "../branding";
+import { useAppSettings } from "../appSettings";
+import {
+  buildCompletionNotificationSnapshot,
+  detectNewCodexCompletions,
+  playCompletionNotificationSound,
+  showDesktopCompletionNotification,
+  summarizeCodexCompletions,
+} from "../completionNotifications";
 import { Button } from "../components/ui/button";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
@@ -51,6 +59,7 @@ function RootRouteView() {
     <ToastProvider>
       <AnchoredToastProvider>
         <EventRouter />
+        <CodexCompletionNotificationObserver />
         <DesktopProjectBootstrap />
         <Outlet />
       </AnchoredToastProvider>
@@ -127,6 +136,60 @@ function errorDetails(error: unknown): string {
   } catch {
     return "No additional error details are available.";
   }
+}
+
+function CodexCompletionNotificationObserver() {
+  const threads = useStore((store) => store.threads);
+  const threadsHydrated = useStore((store) => store.threadsHydrated);
+  const { settings } = useAppSettings();
+  const navigate = useNavigate();
+  const previousSnapshotRef = useRef<ReturnType<typeof buildCompletionNotificationSnapshot> | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const currentSnapshot = buildCompletionNotificationSnapshot(threads);
+    const previousSnapshot = previousSnapshotRef.current;
+    previousSnapshotRef.current = currentSnapshot;
+
+    if (!threadsHydrated) {
+      return;
+    }
+
+    const completions = detectNewCodexCompletions(previousSnapshot, currentSnapshot);
+    if (completions.length === 0) {
+      return;
+    }
+
+    const summary = summarizeCodexCompletions(completions);
+    if (!summary) {
+      return;
+    }
+
+    if (settings.enableCodexCompletionSound) {
+      void playCompletionNotificationSound().catch(() => undefined);
+    }
+
+    if (settings.enableCodexCompletionPopupNotifications) {
+      showDesktopCompletionNotification(summary, (threadId) => {
+        if (!threadId) {
+          return;
+        }
+        void navigate({
+          to: "/$threadId",
+          params: { threadId },
+        });
+      });
+    }
+  }, [
+    navigate,
+    settings.enableCodexCompletionPopupNotifications,
+    settings.enableCodexCompletionSound,
+    threads,
+    threadsHydrated,
+  ]);
+
+  return null;
 }
 
 function EventRouter() {
