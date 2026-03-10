@@ -14,6 +14,7 @@ import {
 } from "@t3tools/shared/model";
 import { create } from "zustand";
 import { type ChatMessage, type Project, type Thread } from "./types";
+import { Debouncer } from "@tanstack/react-pacer";
 
 // ── State ────────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ function readPersistedState(): AppState {
       }
     }
     for (const cwd of parsed.projectOrderCwds ?? []) {
-      if (typeof cwd === "string" && cwd.length > 0) {
+      if (typeof cwd === "string" && cwd.length > 0 && !persistedProjectOrderCwds.includes(cwd)) {
         persistedProjectOrderCwds.push(cwd);
       }
     }
@@ -72,6 +73,8 @@ function readPersistedState(): AppState {
     return initialState;
   }
 }
+
+let legacyKeysCleanedUp = false;
 
 function persistState(state: AppState): void {
   if (typeof window === "undefined") return;
@@ -85,13 +88,17 @@ function persistState(state: AppState): void {
         projectOrderCwds: state.projects.map((project) => project.cwd),
       }),
     );
-    for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
-      window.localStorage.removeItem(legacyKey);
+    if (!legacyKeysCleanedUp) {
+      legacyKeysCleanedUp = true;
+      for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
+        window.localStorage.removeItem(legacyKey);
+      }
     }
   } catch {
     // Ignore quota/storage errors to avoid breaking chat UX.
   }
 }
+const debouncedPersistState = new Debouncer(persistState, { wait: 500 });
 
 // ── Pure helpers ──────────────────────────────────────────────────────
 
@@ -110,39 +117,23 @@ function updateThread(
   return changed ? next : threads;
 }
 
-function orderProjectsByCwd(projects: Project[], orderedCwds: readonly string[]): Project[] {
-  if (projects.length < 2 || orderedCwds.length === 0) {
-    return projects;
-  }
-
-  const orderIndexByCwd = new Map(orderedCwds.map((cwd, index) => [cwd, index] as const));
-  return projects
-    .map((project, index) => ({ project, index }))
-    .toSorted((left, right) => {
-      const leftOrder = orderIndexByCwd.get(left.project.cwd);
-      const rightOrder = orderIndexByCwd.get(right.project.cwd);
-      if (leftOrder === undefined && rightOrder === undefined) {
-        return left.index - right.index;
-      }
-      if (leftOrder === undefined) {
-        return 1;
-      }
-      if (rightOrder === undefined) {
-        return -1;
-      }
-      return leftOrder - rightOrder;
-    })
-    .map(({ project }) => project);
-}
-
 function mapProjectsFromReadModel(
   incoming: OrchestrationReadModel["projects"],
   previous: Project[],
 ): Project[] {
+  const previousById = new Map(previous.map((project) => [project.id, project] as const));
+  const previousByCwd = new Map(previous.map((project) => [project.cwd, project] as const));
+  const previousOrderById = new Map(previous.map((project, index) => [project.id, index] as const));
+  const previousOrderByCwd = new Map(
+    previous.map((project, index) => [project.cwd, index] as const),
+  );
+  const persistedOrderByCwd = new Map(
+    persistedProjectOrderCwds.map((cwd, index) => [cwd, index] as const),
+  );
+  const usePersistedOrder = previous.length === 0;
+
   const mappedProjects = incoming.map((project) => {
-    const existing =
-      previous.find((entry) => entry.id === project.id) ??
-      previous.find((entry) => entry.cwd === project.workspaceRoot);
+    const existing = previousById.get(project.id) ?? previousByCwd.get(project.workspaceRoot);
     return {
       id: project.id,
       name: project.title,
@@ -156,12 +147,26 @@ function mapProjectsFromReadModel(
           ? persistedExpandedProjectCwds.has(project.workspaceRoot)
           : true),
       scripts: project.scripts.map((script) => ({ ...script })),
-    };
+    } satisfies Project;
   });
 
-  const knownProjectOrder =
-    previous.length > 0 ? previous.map((project) => project.cwd) : persistedProjectOrderCwds;
-  return orderProjectsByCwd(mappedProjects, knownProjectOrder);
+  return mappedProjects
+    .map((project, incomingIndex) => {
+      const previousIndex =
+        previousOrderById.get(project.id) ?? previousOrderByCwd.get(project.cwd);
+      const persistedIndex = usePersistedOrder ? persistedOrderByCwd.get(project.cwd) : undefined;
+      const orderIndex =
+        previousIndex ??
+        persistedIndex ??
+        (usePersistedOrder ? persistedProjectOrderCwds.length : previous.length) + incomingIndex;
+      return { project, incomingIndex, orderIndex };
+    })
+    .toSorted((a, b) => {
+      const byOrder = a.orderIndex - b.orderIndex;
+      if (byOrder !== 0) return byOrder;
+      return a.incomingIndex - b.incomingIndex;
+    })
+    .map((entry) => entry.project);
 }
 
 function toLegacySessionStatus(
@@ -412,6 +417,22 @@ export function moveProject(
   return didChange ? { ...state, projects: nextProjects } : state;
 }
 
+export function reorderProjects(
+  state: AppState,
+  draggedProjectId: Project["id"],
+  targetProjectId: Project["id"],
+): AppState {
+  const draggedIndex = state.projects.findIndex((project) => project.id === draggedProjectId);
+  const targetIndex = state.projects.findIndex((project) => project.id === targetProjectId);
+  if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return state;
+  return moveProject(
+    state,
+    draggedProjectId,
+    targetProjectId,
+    draggedIndex < targetIndex ? "after" : "before",
+  );
+}
+
 export function setError(state: AppState, threadId: ThreadId, error: string | null): AppState {
   const threads = updateThread(state.threads, threadId, (t) => {
     if (t.error === error) return t;
@@ -452,6 +473,7 @@ interface AppStore extends AppState {
     targetProjectId: Project["id"],
     position: ProjectMovePosition,
   ) => void;
+  reorderProjects: (draggedProjectId: Project["id"], targetProjectId: Project["id"]) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
   setThreadBranch: (threadId: ThreadId, branch: string | null, worktreePath: string | null) => void;
 }
@@ -467,13 +489,22 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => setProjectExpanded(state, projectId, expanded)),
   moveProject: (projectId, targetProjectId, position) =>
     set((state) => moveProject(state, projectId, targetProjectId, position)),
+  reorderProjects: (draggedProjectId, targetProjectId) =>
+    set((state) => reorderProjects(state, draggedProjectId, targetProjectId)),
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadId, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadId, branch, worktreePath)),
 }));
 
-// Persist on every state change
-useStore.subscribe((state) => persistState(state));
+// Persist state changes with debouncing to avoid localStorage thrashing
+useStore.subscribe((state) => debouncedPersistState.maybeExecute(state));
+
+// Flush pending writes synchronously before page unload to prevent data loss.
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    debouncedPersistState.flush();
+  });
+}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
