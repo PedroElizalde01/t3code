@@ -15,6 +15,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
 import type { Components } from "react-markdown";
@@ -56,6 +57,7 @@ interface ChatMarkdownProps {
 }
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
+const COPY_FEEDBACK_DURATION_MS = 1200;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -133,15 +135,54 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
   return promise;
 }
 
-function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
+function resolveInlineCodeTarget(
+  target: EventTarget | null,
+  container: HTMLDivElement,
+): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+
+  const inlineCode = target.closest("code");
+  if (!(inlineCode instanceof HTMLElement)) {
+    return null;
+  }
+
+  if (!container.contains(inlineCode) || inlineCode.closest("pre") != null) {
+    return null;
+  }
+
+  return inlineCode;
+}
+
+interface MarkdownCopyContainerProps {
+  children: ReactNode;
+  className: string;
+  copyLabel: string;
+  getCopyText: () => string;
+}
+
+function MarkdownCopyContainer({
+  children,
+  className,
+  copyLabel,
+  getCopyText,
+}: MarkdownCopyContainerProps) {
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const handleCopy = useCallback(() => {
     if (typeof navigator === "undefined" || navigator.clipboard == null) {
       return;
     }
+
+    const copyText = getCopyText().trimEnd();
+    if (copyText.length === 0) {
+      return;
+    }
+
     void navigator.clipboard
-      .writeText(code)
+      .writeText(copyText)
       .then(() => {
         if (copiedTimerRef.current != null) {
           clearTimeout(copiedTimerRef.current);
@@ -150,10 +191,10 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
         copiedTimerRef.current = setTimeout(() => {
           setCopied(false);
           copiedTimerRef.current = null;
-        }, 1200);
+        }, COPY_FEEDBACK_DURATION_MS);
       })
       .catch(() => undefined);
-  }, [code]);
+  }, [getCopyText]);
 
   useEffect(
     () => () => {
@@ -166,18 +207,52 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
   );
 
   return (
-    <div className="chat-markdown-codeblock">
+    <div className={className}>
       <button
         type="button"
         className="chat-markdown-copy-button"
         onClick={handleCopy}
-        title={copied ? "Copied" : "Copy code"}
-        aria-label={copied ? "Copied" : "Copy code"}
+        title={copied ? "Copied" : copyLabel}
+        aria-label={copied ? "Copied" : copyLabel}
       >
         {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
       </button>
       {children}
     </div>
+  );
+}
+
+function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
+  const getCopyText = useCallback(() => code, [code]);
+
+  return (
+    <MarkdownCopyContainer
+      className="chat-markdown-copyable chat-markdown-codeblock"
+      copyLabel="Copy code"
+      getCopyText={getCopyText}
+    >
+      {children}
+    </MarkdownCopyContainer>
+  );
+}
+
+function MarkdownBlockquote({
+  children,
+  ...props
+}: ComponentPropsWithoutRef<"blockquote"> & { children: ReactNode }) {
+  const blockquoteRef = useRef<HTMLQuoteElement | null>(null);
+  const getCopyText = useCallback(() => blockquoteRef.current?.innerText ?? "", []);
+
+  return (
+    <MarkdownCopyContainer
+      className="chat-markdown-copyable chat-markdown-blockquote-shell"
+      copyLabel="Copy text"
+      getCopyText={getCopyText}
+    >
+      <blockquote {...props} ref={blockquoteRef}>
+        {children}
+      </blockquote>
+    </MarkdownCopyContainer>
   );
 }
 
@@ -233,6 +308,8 @@ function SuspenseShikiCodeBlock({
 }
 
 function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
+  const markdownRef = useRef<HTMLDivElement | null>(null);
+  const inlineCodeFeedbackTimersRef = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>());
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownComponents = useMemo<Components>(
@@ -281,12 +358,117 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
           </MarkdownCodeBlock>
         );
       },
+      blockquote({ node: _node, children, ...props }) {
+        return <MarkdownBlockquote {...props}>{children}</MarkdownBlockquote>;
+      },
     }),
     [cwd, diffThemeName, isStreaming],
   );
 
+  const copyInlineCode = useCallback((inlineCode: HTMLElement) => {
+    if (typeof navigator === "undefined" || navigator.clipboard == null) {
+      return;
+    }
+
+    const copyText = inlineCode.innerText.trim();
+    if (copyText.length === 0) {
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(copyText)
+      .then(() => {
+        const existingTimer = inlineCodeFeedbackTimersRef.current.get(inlineCode);
+        if (existingTimer != null) {
+          clearTimeout(existingTimer);
+        }
+
+        inlineCode.dataset.copied = "true";
+        const timeoutId = setTimeout(() => {
+          delete inlineCode.dataset.copied;
+          inlineCodeFeedbackTimersRef.current.delete(inlineCode);
+        }, COPY_FEEDBACK_DURATION_MS);
+        inlineCodeFeedbackTimersRef.current.set(inlineCode, timeoutId);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const handleMarkdownClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const container = markdownRef.current;
+      if (container == null) {
+        return;
+      }
+
+      const inlineCode = resolveInlineCodeTarget(event.target, container);
+      if (inlineCode == null) {
+        return;
+      }
+
+      event.preventDefault();
+      copyInlineCode(inlineCode);
+    },
+    [copyInlineCode],
+  );
+
+  const handleMarkdownKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+
+      const container = markdownRef.current;
+      if (container == null) {
+        return;
+      }
+
+      const inlineCode = resolveInlineCodeTarget(event.target, container);
+      if (inlineCode == null) {
+        return;
+      }
+
+      event.preventDefault();
+      copyInlineCode(inlineCode);
+    },
+    [copyInlineCode],
+  );
+
+  useEffect(() => {
+    const container = markdownRef.current;
+    if (container == null) {
+      return;
+    }
+
+    const inlineCodes = container.querySelectorAll<HTMLElement>("code");
+    for (const inlineCode of inlineCodes) {
+      if (inlineCode.closest("pre") != null) {
+        continue;
+      }
+
+      inlineCode.classList.add("chat-markdown-inline-code");
+      inlineCode.tabIndex = 0;
+      inlineCode.setAttribute("role", "button");
+      inlineCode.setAttribute("aria-label", "Copy code");
+    }
+  }, [text, isStreaming]);
+
+  useEffect(
+    () => () => {
+      for (const timeoutId of inlineCodeFeedbackTimersRef.current.values()) {
+        clearTimeout(timeoutId);
+      }
+      inlineCodeFeedbackTimersRef.current.clear();
+    },
+    [],
+  );
+
   return (
-    <div className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80">
+    <div
+      ref={markdownRef}
+      className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80"
+      onClick={handleMarkdownClick}
+      onKeyDown={handleMarkdownKeyDown}
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {text}
       </ReactMarkdown>

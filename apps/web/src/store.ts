@@ -42,19 +42,29 @@ const initialState: AppState = {
   threadsHydrated: false,
 };
 const persistedExpandedProjectCwds = new Set<string>();
+const persistedProjectOrderCwds: string[] = [];
 
 // ── Persist helpers ──────────────────────────────────────────────────
 
 function readPersistedState(): AppState {
   if (typeof window === "undefined") return initialState;
+  persistedExpandedProjectCwds.clear();
+  persistedProjectOrderCwds.length = 0;
   try {
     const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
     if (!raw) return initialState;
-    const parsed = JSON.parse(raw) as { expandedProjectCwds?: string[] };
-    persistedExpandedProjectCwds.clear();
+    const parsed = JSON.parse(raw) as {
+      expandedProjectCwds?: string[];
+      projectOrderCwds?: string[];
+    };
     for (const cwd of parsed.expandedProjectCwds ?? []) {
       if (typeof cwd === "string" && cwd.length > 0) {
         persistedExpandedProjectCwds.add(cwd);
+      }
+    }
+    for (const cwd of parsed.projectOrderCwds ?? []) {
+      if (typeof cwd === "string" && cwd.length > 0) {
+        persistedProjectOrderCwds.push(cwd);
       }
     }
     return { ...initialState };
@@ -72,6 +82,7 @@ function persistState(state: AppState): void {
         expandedProjectCwds: state.projects
           .filter((project) => project.expanded)
           .map((project) => project.cwd),
+        projectOrderCwds: state.projects.map((project) => project.cwd),
       }),
     );
     for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
@@ -99,11 +110,36 @@ function updateThread(
   return changed ? next : threads;
 }
 
+function orderProjectsByCwd(projects: Project[], orderedCwds: readonly string[]): Project[] {
+  if (projects.length < 2 || orderedCwds.length === 0) {
+    return projects;
+  }
+
+  const orderIndexByCwd = new Map(orderedCwds.map((cwd, index) => [cwd, index] as const));
+  return projects
+    .map((project, index) => ({ project, index }))
+    .toSorted((left, right) => {
+      const leftOrder = orderIndexByCwd.get(left.project.cwd);
+      const rightOrder = orderIndexByCwd.get(right.project.cwd);
+      if (leftOrder === undefined && rightOrder === undefined) {
+        return left.index - right.index;
+      }
+      if (leftOrder === undefined) {
+        return 1;
+      }
+      if (rightOrder === undefined) {
+        return -1;
+      }
+      return leftOrder - rightOrder;
+    })
+    .map(({ project }) => project);
+}
+
 function mapProjectsFromReadModel(
   incoming: OrchestrationReadModel["projects"],
   previous: Project[],
 ): Project[] {
-  return incoming.map((project) => {
+  const mappedProjects = incoming.map((project) => {
     const existing =
       previous.find((entry) => entry.id === project.id) ??
       previous.find((entry) => entry.cwd === project.workspaceRoot);
@@ -122,6 +158,10 @@ function mapProjectsFromReadModel(
       scripts: project.scripts.map((script) => ({ ...script })),
     };
   });
+
+  const knownProjectOrder =
+    previous.length > 0 ? previous.map((project) => project.cwd) : persistedProjectOrderCwds;
+  return orderProjectsByCwd(mappedProjects, knownProjectOrder);
 }
 
 function toLegacySessionStatus(
@@ -342,6 +382,36 @@ export function setProjectExpanded(
   return changed ? { ...state, projects } : state;
 }
 
+export type ProjectMovePosition = "before" | "after";
+
+export function moveProject(
+  state: AppState,
+  projectId: Project["id"],
+  targetProjectId: Project["id"],
+  position: ProjectMovePosition,
+): AppState {
+  const sourceIndex = state.projects.findIndex((project) => project.id === projectId);
+  const targetIndex = state.projects.findIndex((project) => project.id === targetProjectId);
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+    return state;
+  }
+
+  const remainingProjects = state.projects.filter((project) => project.id !== projectId);
+  const targetInsertionIndex = position === "before" ? targetIndex : targetIndex + 1;
+  const nextInsertionIndex =
+    sourceIndex < targetInsertionIndex ? targetInsertionIndex - 1 : targetInsertionIndex;
+  const clampedInsertionIndex = Math.max(0, Math.min(nextInsertionIndex, remainingProjects.length));
+  const movedProject = state.projects[sourceIndex];
+  if (!movedProject) {
+    return state;
+  }
+  const nextProjects = [...remainingProjects];
+  nextProjects.splice(clampedInsertionIndex, 0, movedProject);
+
+  const didChange = nextProjects.some((project, index) => project.id !== state.projects[index]?.id);
+  return didChange ? { ...state, projects: nextProjects } : state;
+}
+
 export function setError(state: AppState, threadId: ThreadId, error: string | null): AppState {
   const threads = updateThread(state.threads, threadId, (t) => {
     if (t.error === error) return t;
@@ -377,6 +447,11 @@ interface AppStore extends AppState {
   markThreadUnread: (threadId: ThreadId) => void;
   toggleProject: (projectId: Project["id"]) => void;
   setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
+  moveProject: (
+    projectId: Project["id"],
+    targetProjectId: Project["id"],
+    position: ProjectMovePosition,
+  ) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
   setThreadBranch: (threadId: ThreadId, branch: string | null, worktreePath: string | null) => void;
 }
@@ -390,6 +465,8 @@ export const useStore = create<AppStore>((set) => ({
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),
+  moveProject: (projectId, targetProjectId, position) =>
+    set((state) => moveProject(state, projectId, targetProjectId, position)),
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadId, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadId, branch, worktreePath)),

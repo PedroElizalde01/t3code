@@ -195,7 +195,7 @@ function serveFallbackFavicon(res: http.ServerResponse): void {
 
 async function serveRemoteFavicon(remoteUrl: string, res: http.ServerResponse): Promise<boolean> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3000);
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
   try {
     const response = await fetch(remoteUrl, {
       redirect: "follow",

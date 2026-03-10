@@ -68,9 +68,11 @@ import {
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
+import { isMacPlatform } from "../lib/utils";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
+type ProjectDropPosition = "before" | "after";
 
 async function copyTextToClipboard(text: string): Promise<void> {
   if (typeof navigator === "undefined" || navigator.clipboard?.writeText === undefined) {
@@ -147,19 +149,11 @@ function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   return null;
 }
 
-function T3Wordmark() {
+function BrandWordmark() {
   return (
-    <svg
-      aria-label="T3"
-      className="h-2.5 w-auto shrink-0 text-foreground"
-      viewBox="15.5309 37 94.3941 56.96"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M33.4509 93V47.56H15.5309V37H64.3309V47.56H46.4109V93H33.4509ZM86.7253 93.96C82.832 93.96 78.9653 93.4533 75.1253 92.44C71.2853 91.3733 68.032 89.88 65.3653 87.96L70.4053 78.04C72.5386 79.5867 75.0186 80.8133 77.8453 81.72C80.672 82.6267 83.5253 83.08 86.4053 83.08C89.6586 83.08 92.2186 82.44 94.0853 81.16C95.952 79.88 96.8853 78.12 96.8853 75.88C96.8853 73.7467 96.0586 72.0667 94.4053 70.84C92.752 69.6133 90.0853 69 86.4053 69H80.4853V60.44L96.0853 42.76L97.5253 47.4H68.1653V37H107.365V45.4L91.8453 63.08L85.2853 59.32H89.0453C95.9253 59.32 101.125 60.8667 104.645 63.96C108.165 67.0533 109.925 71.0267 109.925 75.88C109.925 79.0267 109.099 81.9867 107.445 84.76C105.792 87.48 103.259 89.6933 99.8453 91.4C96.432 93.1067 92.0586 93.96 86.7253 93.96Z"
-        fill="currentColor"
-      />
-    </svg>
+    <span aria-label="Orbit" className="brand-wordmark truncate text-foreground">
+      ØRBIT
+    </span>
   );
 }
 
@@ -186,19 +180,42 @@ function getServerHttpOrigin(): string {
 }
 
 const serverHttpOrigin = getServerHttpOrigin();
+const PROJECT_FAVICON_MAX_RETRIES = 3;
+const PROJECT_FAVICON_RETRY_DELAY_MS = 1_000;
 
 function ProjectFavicon({ cwd }: { cwd: string }) {
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [retryCount, setRetryCount] = useState(0);
 
   const src = `${serverHttpOrigin}/api/project-favicon?cwd=${encodeURIComponent(cwd)}`;
+  const requestSrc = retryCount === 0 ? src : `${src}&retry=${retryCount}`;
 
-  if (status === "error") {
+  useEffect(() => {
+    setStatus("loading");
+    setRetryCount(0);
+  }, [src]);
+
+  useEffect(() => {
+    if (status !== "error" || retryCount >= PROJECT_FAVICON_MAX_RETRIES) {
+      return;
+    }
+
+    const retryTimer = window.setTimeout(() => {
+      setRetryCount((current) => current + 1);
+      setStatus("loading");
+    }, PROJECT_FAVICON_RETRY_DELAY_MS);
+
+    return () => window.clearTimeout(retryTimer);
+  }, [retryCount, status]);
+
+  if (status === "error" && retryCount >= PROJECT_FAVICON_MAX_RETRIES) {
     return <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/50" />;
   }
 
   return (
     <img
-      src={src}
+      key={requestSrc}
+      src={requestSrc}
       alt=""
       className={`size-3.5 shrink-0 rounded-sm object-contain ${status === "loading" ? "hidden" : ""}`}
       onLoad={() => setStatus("loaded")}
@@ -212,6 +229,7 @@ export default function Sidebar() {
   const threads = useStore((store) => store.threads);
   const markThreadUnread = useStore((store) => store.markThreadUnread);
   const toggleProject = useStore((store) => store.toggleProject);
+  const moveProject = useStore((store) => store.moveProject);
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearThreadDraft);
   const getDraftThreadByProjectId = useComposerDraftStore(
     (store) => store.getDraftThreadByProjectId,
@@ -254,8 +272,15 @@ export default function Sidebar() {
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [draggedProjectId, setDraggedProjectId] = useState<ProjectId | null>(null);
+  const [projectDropTarget, setProjectDropTarget] = useState<{
+    projectId: ProjectId;
+    position: ProjectDropPosition;
+  } | null>(null);
   const shouldBrowseForProjectImmediately = isElectron;
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
+  const shouldOffsetDesktopBrandingForTrafficLights =
+    typeof navigator !== "undefined" && isMacPlatform(navigator.platform);
   const pendingApprovalByThreadId = useMemo(() => {
     const map = new Map<ThreadId, boolean>();
     for (const thread of threads) {
@@ -966,14 +991,62 @@ export default function Sidebar() {
     });
   }, []);
 
+  const clearProjectDragState = useCallback(() => {
+    setDraggedProjectId(null);
+    setProjectDropTarget(null);
+  }, []);
+
+  const getProjectDropPosition = useCallback(
+    (event: React.DragEvent<HTMLElement>): ProjectDropPosition => {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      return event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+    },
+    [],
+  );
+
+  const handleProjectDragStart = useCallback((projectId: ProjectId) => {
+    setDraggedProjectId(projectId);
+    setProjectDropTarget(null);
+  }, []);
+
+  const handleProjectDragOver = useCallback(
+    (event: React.DragEvent<HTMLElement>, projectId: ProjectId) => {
+      if (!draggedProjectId || draggedProjectId === projectId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const position = getProjectDropPosition(event);
+      setProjectDropTarget((current) => {
+        if (current?.projectId === projectId && current.position === position) {
+          return current;
+        }
+        return { projectId, position };
+      });
+    },
+    [draggedProjectId, getProjectDropPosition],
+  );
+
+  const handleProjectDrop = useCallback(
+    (event: React.DragEvent<HTMLElement>, projectId: ProjectId) => {
+      if (!draggedProjectId || draggedProjectId === projectId) {
+        clearProjectDragState();
+        return;
+      }
+
+      event.preventDefault();
+      moveProject(draggedProjectId, projectId, getProjectDropPosition(event));
+      clearProjectDragState();
+    },
+    [clearProjectDragState, draggedProjectId, getProjectDropPosition, moveProject],
+  );
+
   const wordmark = (
     <div className="flex items-center gap-2">
       <SidebarTrigger className="shrink-0 md:hidden" />
-      <div className="flex min-w-0 flex-1 items-center gap-1 mt-1.5 ml-1">
-        <T3Wordmark />
-        <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
-          Code
-        </span>
+      <div className="ml-1 flex min-w-0 flex-1 items-center gap-2">
+        <BrandWordmark />
         <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
           {APP_STAGE_LABEL}
         </span>
@@ -985,7 +1058,11 @@ export default function Sidebar() {
     <>
       {isElectron ? (
         <>
-          <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px]">
+          <SidebarHeader
+            className={`drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 ${
+              shouldOffsetDesktopBrandingForTrafficLights ? "pl-[90px]" : ""
+            }`}
+          >
             {wordmark}
             {showDesktopUpdateButton && (
               <Tooltip>
@@ -1131,7 +1208,9 @@ export default function Sidebar() {
           )}
 
           <SidebarMenu>
-            {projects.map((project) => {
+            {projects.map((project, projectIndex) => {
+              const previousProjectId = projects[projectIndex - 1]?.id ?? "start";
+              const nextProjectId = projects[projectIndex + 1]?.id ?? "end";
               const projectThreads = threads
                 .filter((thread) => thread.projectId === project.id)
                 .toSorted((a, b) => {
@@ -1145,10 +1224,13 @@ export default function Sidebar() {
                 hasHiddenThreads && !isThreadListExpanded
                   ? projectThreads.slice(0, THREAD_PREVIEW_LIMIT)
                   : projectThreads;
+              const isProjectBeingDragged = draggedProjectId === project.id;
+              const dropIndicatorPosition =
+                projectDropTarget?.projectId === project.id ? projectDropTarget.position : null;
 
               return (
                 <Collapsible
-                  key={project.id}
+                  key={`${project.id}:${previousProjectId}:${nextProjectId}`}
                   className="group/collapsible"
                   open={project.expanded}
                   onOpenChange={(open) => {
@@ -1157,12 +1239,40 @@ export default function Sidebar() {
                   }}
                 >
                   <SidebarMenuItem>
-                    <div className="group/project-header relative">
+                    <div
+                      className={`group/project-header relative ${
+                        isProjectBeingDragged ? "opacity-55" : ""
+                      }`}
+                      draggable={projects.length > 1}
+                      aria-grabbed={isProjectBeingDragged}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", project.id);
+                        handleProjectDragStart(project.id);
+                      }}
+                      onDragOver={(event) => {
+                        handleProjectDragOver(event, project.id);
+                      }}
+                      onDrop={(event) => {
+                        handleProjectDrop(event, project.id);
+                      }}
+                      onDragEnd={clearProjectDragState}
+                    >
+                      {dropIndicatorPosition ? (
+                        <div
+                          aria-hidden="true"
+                          className={`pointer-events-none absolute left-2 right-2 h-0.5 rounded-full bg-primary ${
+                            dropIndicatorPosition === "before" ? "top-0" : "bottom-0"
+                          }`}
+                        />
+                      ) : null}
                       <CollapsibleTrigger
                         render={
                           <SidebarMenuButton
                             size="sm"
-                            className="gap-2 px-2 py-1.5 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground"
+                            className={`gap-2 px-2 py-1.5 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground ${
+                              projects.length > 1 ? "cursor-grab active:cursor-grabbing" : ""
+                            }`}
                           />
                         }
                         onContextMenu={(event) => {

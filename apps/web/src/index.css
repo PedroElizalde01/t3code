@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Geist Pixel Square";
+  src: url("./assets/fonts/GeistPixel-Square.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark, .dark *));
 
 @theme inline {
@@ -131,6 +139,20 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100vh;
+}
+
+.brand-wordmark {
+  font-family:
+    "Geist Pixel Square",
+    "SF Mono",
+    "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    Menlo,
+    monospace;
+  font-size: 1.5rem;
+  line-height: 1;
+  letter-spacing: 0.06em;
 }
 
 html,
@@ -318,6 +340,45 @@ label:has(> select#reasoning-effort) select {
   font-size: 0.75rem;
 }
 
+.chat-markdown :not(pre) > code.chat-markdown-inline-code {
+  position: relative;
+  display: inline-block;
+  cursor: copy;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.chat-markdown :not(pre) > code.chat-markdown-inline-code:hover {
+  border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
+  background: color-mix(in srgb, var(--muted) 82%, var(--background));
+}
+
+.chat-markdown :not(pre) > code.chat-markdown-inline-code:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground) 24%, transparent);
+  outline-offset: 2px;
+}
+
+.chat-markdown :not(pre) > code.chat-markdown-inline-code[data-copied="true"]::after {
+  content: "Copied";
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.4rem);
+  z-index: 2;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--popover) 96%, var(--background));
+  padding: 0.2rem 0.4rem;
+  color: var(--popover-foreground);
+  font-size: 0.6875rem;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px color-mix(in srgb, black 12%, transparent);
+  pointer-events: none;
+}
+
 .chat-markdown pre {
   max-width: 100%;
   overflow-x: auto;
@@ -335,13 +396,18 @@ label:has(> select#reasoning-effort) select {
   font-size: 0.875rem;
 }
 
-.chat-markdown .chat-markdown-codeblock {
+.chat-markdown .chat-markdown-copyable {
   position: relative;
   margin: 0.65rem 0;
 }
 
-.chat-markdown .chat-markdown-codeblock pre {
+.chat-markdown .chat-markdown-copyable pre,
+.chat-markdown .chat-markdown-copyable blockquote {
   margin: 0;
+}
+
+.chat-markdown .chat-markdown-blockquote-shell blockquote {
+  padding-right: 2.25rem;
 }
 
 .chat-markdown .chat-markdown-copy-button {
@@ -366,8 +432,8 @@ label:has(> select#reasoning-effort) select {
     border-color 120ms ease;
 }
 
-.chat-markdown .chat-markdown-codeblock:hover .chat-markdown-copy-button,
-.chat-markdown .chat-markdown-codeblock:focus-within .chat-markdown-copy-button {
+.chat-markdown .chat-markdown-copyable:hover .chat-markdown-copy-button,
+.chat-markdown .chat-markdown-copyable:focus-within .chat-markdown-copy-button {
   opacity: 1;
   pointer-events: auto;
 }
