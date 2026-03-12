@@ -53,18 +53,8 @@ const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined>
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
-const optionalPortConfig = (name: string): Config.Config<number | undefined> =>
-  Config.port(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
 const optionalIntegerConfig = (name: string): Config.Config<number | undefined> =>
   Config.int(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
-const optionalUrlConfig = (name: string): Config.Config<URL | undefined> =>
-  Config.url(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
@@ -341,8 +331,8 @@ interface DevRunnerCliInput {
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
   readonly host: string | undefined;
-  readonly port: number | undefined;
-  readonly devUrl: URL | undefined;
+  readonly port: Option.Option<number>;
+  readonly devUrl: Option.Option<URL>;
   readonly dryRun: boolean;
   readonly turboArgs: ReadonlyArray<string>;
 }
@@ -360,6 +350,50 @@ const readOptionalBooleanEnv = (name: string): boolean | undefined => {
   }
   return undefined;
 };
+
+const readOptionalPortEnv = (name: string): number | undefined => {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_PORT) {
+    return undefined;
+  }
+  return parsed;
+};
+
+const readOptionalUrlEnv = (name: string): URL | undefined => {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+};
+
+function shouldIgnoreInheritedRuntimeOverrides(env: NodeJS.ProcessEnv): boolean {
+  return env.T3CODE_MODE === "desktop" || env.T3CODE_DESKTOP_WS_URL !== undefined;
+}
+
+export function resolveExplicitDevRunnerOverrides(
+  input: Pick<DevRunnerCliInput, "port" | "devUrl">,
+  env: NodeJS.ProcessEnv,
+): { readonly port: number | undefined; readonly devUrl: URL | undefined } {
+  const ignoreInheritedRuntimeOverrides = shouldIgnoreInheritedRuntimeOverrides(env);
+  const cliPort = Option.getOrUndefined(input.port);
+  const cliDevUrl = Option.getOrUndefined(input.devUrl);
+  return {
+    port:
+      cliPort ?? (ignoreInheritedRuntimeOverrides ? undefined : readOptionalPortEnv("T3CODE_PORT")),
+    devUrl:
+      cliDevUrl ??
+      (ignoreInheritedRuntimeOverrides ? undefined : readOptionalUrlEnv("VITE_DEV_SERVER_URL")),
+  };
+}
 
 const resolveOptionalBooleanOverride = (
   explicitValue: boolean | undefined,
@@ -402,12 +436,16 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       autoBootstrapProjectFromCwd: readOptionalBooleanEnv("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
       logWebSocketEvents: readOptionalBooleanEnv("T3CODE_LOG_WS_EVENTS"),
     };
+    const { port: explicitPort, devUrl: explicitDevUrl } = resolveExplicitDevRunnerOverrides(
+      input,
+      process.env,
+    );
 
     const { serverOffset, webOffset } = yield* resolveModePortOffsets({
       mode: input.mode,
       startOffset: offset,
-      hasExplicitServerPort: input.port !== undefined,
-      hasExplicitDevUrl: input.devUrl !== undefined,
+      hasExplicitServerPort: explicitPort !== undefined,
+      hasExplicitDevUrl: explicitDevUrl !== undefined,
     });
 
     const env = yield* createDevRunnerEnv({
@@ -427,8 +465,8 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         envOverrides.logWebSocketEvents,
       ),
       host: input.host,
-      port: input.port,
-      devUrl: input.devUrl,
+      port: explicitPort,
+      devUrl: explicitDevUrl,
     });
 
     const selectionSuffix =
@@ -516,12 +554,12 @@ const devRunnerCli = Command.make("dev-runner", {
   port: Flag.integer("port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription("Server port override (forwards to T3CODE_PORT)."),
-    Flag.withFallbackConfig(optionalPortConfig("T3CODE_PORT")),
+    Flag.optional,
   ),
   devUrl: Flag.string("dev-url").pipe(
     Flag.withSchema(Schema.URLFromString),
     Flag.withDescription("Web dev URL override (forwards to VITE_DEV_SERVER_URL)."),
-    Flag.withFallbackConfig(optionalUrlConfig("VITE_DEV_SERVER_URL")),
+    Flag.optional,
   ),
   dryRun: Flag.boolean("dry-run").pipe(
     Flag.withDescription("Resolve mode/ports/env and print, but do not spawn turbo."),

@@ -1,7 +1,8 @@
 import { ThreadId } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
 import type { Thread } from "./types";
+import { hasVisibleCompletedStatus } from "./threadStatus";
 
 export interface CompletionNotificationSnapshot {
   threadId: ThreadId;
@@ -18,6 +19,7 @@ export interface CompletionNotificationSnapshot {
       : null
     : null;
   completedAt: string | null;
+  completedStatusVisible: boolean;
 }
 
 export interface CodexCompletionNotification {
@@ -32,6 +34,8 @@ export interface CompletionNotificationSummary {
   threadId: ThreadId | null;
 }
 
+const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
+
 export function buildCompletionNotificationSnapshot(
   threads: readonly Thread[],
 ): Map<ThreadId, CompletionNotificationSnapshot> {
@@ -45,13 +49,18 @@ export function buildCompletionNotificationSnapshot(
         provider: thread.session?.provider ?? null,
         turnId: thread.latestTurn?.turnId ?? null,
         completedAt: thread.latestTurn?.completedAt ?? null,
+        completedStatusVisible: hasVisibleCompletedStatus(thread),
       },
     ]),
   );
 }
 
 function isCodexSnapshot(snapshot: CompletionNotificationSnapshot): boolean {
-  return snapshot.provider === "codex" || normalizeModelSlug(snapshot.model, "codex") !== null;
+  const normalizedModel = normalizeModelSlug(snapshot.model, "codex");
+  return (
+    snapshot.provider === "codex" ||
+    (normalizedModel !== null && CODEX_MODEL_SLUGS.has(normalizedModel))
+  );
 }
 
 export function detectNewCodexCompletions(
@@ -64,7 +73,12 @@ export function detectNewCodexCompletions(
 
   const completions: CodexCompletionNotification[] = [];
   for (const [threadId, snapshot] of current) {
-    if (!isCodexSnapshot(snapshot) || snapshot.turnId === null || snapshot.completedAt === null) {
+    if (
+      !isCodexSnapshot(snapshot) ||
+      snapshot.turnId === null ||
+      snapshot.completedAt === null ||
+      !snapshot.completedStatusVisible
+    ) {
       continue;
     }
 
@@ -74,9 +88,10 @@ export function detectNewCodexCompletions(
     }
 
     const sameTurn = before.turnId === snapshot.turnId;
-    const justCompletedCurrentTurn = sameTurn && before.completedAt === null;
-    const newlyCompletedDifferentTurn = !sameTurn;
-    if (!justCompletedCurrentTurn && !newlyCompletedDifferentTurn) {
+    const justBecameCompletedForCurrentTurn =
+      sameTurn && !before.completedStatusVisible && snapshot.completedStatusVisible;
+    const newlyVisibleCompletedDifferentTurn = !sameTurn;
+    if (!justBecameCompletedForCurrentTurn && !newlyVisibleCompletedDifferentTurn) {
       continue;
     }
 
@@ -129,6 +144,10 @@ export function summarizeCodexCompletions(
 
 let audioContextSingleton: AudioContext | null = null;
 
+function focusNotificationWindow(): void {
+  window.focus();
+}
+
 export async function playCompletionNotificationSound(): Promise<void> {
   if (typeof window === "undefined") {
     return;
@@ -178,10 +197,18 @@ export function showDesktopCompletionNotification(
     tag: summary.threadId ? `codex-finished:${summary.threadId}` : "codex-finished:multi",
   });
 
-  notification.addEventListener("click", () => {
-    window.focus();
-    onClick?.(summary.threadId);
+  let handledClick = false;
+
+  notification.addEventListener("click", (event) => {
+    if (handledClick) {
+      return;
+    }
+    handledClick = true;
+    event.preventDefault();
     notification.close();
+    onClick?.(summary.threadId);
+    focusNotificationWindow();
+    window.setTimeout(focusNotificationWindow, 0);
   });
 
   return notification;

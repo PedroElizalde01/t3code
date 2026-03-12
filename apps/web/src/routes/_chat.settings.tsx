@@ -98,9 +98,13 @@ function SettingsRouteView() {
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
+  const [skillPathInput, setSkillPathInput] = useState("");
+  const [skillPathError, setSkillPathError] = useState<string | null>(null);
+  const [isPickingSkillFolder, setIsPickingSkillFolder] = useState(false);
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
+  const codexSkillPaths = settings.codexSkillPaths;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const desktopNotificationsSupported = desktopNotificationPermission !== "unsupported";
 
@@ -184,6 +188,55 @@ function SettingsRouteView() {
     },
     [settings, updateSettings],
   );
+
+  const addSkillPath = useCallback(
+    (rawPath: string) => {
+      const nextPath = rawPath.trim();
+      if (!nextPath) {
+        setSkillPathError("Enter a folder path.");
+        return false;
+      }
+      if (codexSkillPaths.includes(nextPath)) {
+        setSkillPathError("That skill path is already saved.");
+        return false;
+      }
+
+      updateSettings({ codexSkillPaths: [...codexSkillPaths, nextPath] });
+      setSkillPathInput("");
+      setSkillPathError(null);
+      return true;
+    },
+    [codexSkillPaths, updateSettings],
+  );
+
+  const removeSkillPath = useCallback(
+    (pathToRemove: string) => {
+      updateSettings({
+        codexSkillPaths: codexSkillPaths.filter((entry) => entry !== pathToRemove),
+      });
+      setSkillPathError(null);
+    },
+    [codexSkillPaths, updateSettings],
+  );
+
+  const pickSkillFolder = useCallback(async () => {
+    if (!isElectron || isPickingSkillFolder) return;
+    setSkillPathError(null);
+    setIsPickingSkillFolder(true);
+    try {
+      const api = ensureNativeApi();
+      const pickedPath = await api.dialogs.pickFolder();
+      if (pickedPath) {
+        addSkillPath(pickedPath);
+      }
+    } catch (error) {
+      setSkillPathError(
+        error instanceof Error ? error.message : "Unable to open the folder picker.",
+      );
+    } finally {
+      setIsPickingSkillFolder(false);
+    }
+  }, [addSkillPath, isPickingSkillFolder]);
 
   const handleCodexCompletionPopupNotificationsChange = useCallback(
     async (checked: boolean) => {
@@ -340,6 +393,110 @@ function SettingsRouteView() {
                     }
                   >
                     Reset codex overrides
+                  </Button>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Skills</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  `CODEX_HOME/skills` is always included. Add extra folders to scan recursively for
+                  `SKILL.md` files on this device.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <label htmlFor="codex-skill-path" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Additional skill path</span>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Input
+                      id="codex-skill-path"
+                      value={skillPathInput}
+                      onChange={(event) => {
+                        setSkillPathInput(event.target.value);
+                        if (skillPathError) {
+                          setSkillPathError(null);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        addSkillPath(skillPathInput);
+                      }}
+                      placeholder="/Users/you/dev/my-codex-skills"
+                      spellCheck={false}
+                    />
+                    {isElectron ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void pickSkillFolder()}
+                        disabled={isPickingSkillFolder}
+                      >
+                        {isPickingSkillFolder ? "Browsing..." : "Browse"}
+                      </Button>
+                    ) : null}
+                    <Button type="button" onClick={() => addSkillPath(skillPathInput)}>
+                      Add path
+                    </Button>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    Point this at any folder that contains one or more skill directories.
+                  </span>
+                </label>
+
+                {skillPathError ? (
+                  <p className="text-destructive text-xs">{skillPathError}</p>
+                ) : null}
+
+                {codexSkillPaths.length > 0 ? (
+                  <div className="space-y-2">
+                    {codexSkillPaths.map((entry) => (
+                      <div
+                        key={entry}
+                        className="flex flex-col gap-3 rounded-xl border border-border bg-background/50 p-3 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-foreground">Skill path</p>
+                          <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                            {entry}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          onClick={() => removeSkillPath(entry)}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border bg-background/35 px-4 py-6 text-center text-muted-foreground text-xs">
+                    No extra skill paths configured. Only `CODEX_HOME/skills` will be scanned.
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p>Configured extra skill paths</p>
+                    <p className="mt-1 font-medium text-foreground">
+                      {codexSkillPaths.length === 0
+                        ? "Using only CODEX_HOME/skills"
+                        : `${codexSkillPaths.length} custom path${codexSkillPaths.length === 1 ? "" : "s"}`}
+                    </p>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="self-start"
+                    onClick={() => updateSettings({ codexSkillPaths: defaults.codexSkillPaths })}
+                  >
+                    Reset skill paths
                   </Button>
                 </div>
               </div>

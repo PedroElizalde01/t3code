@@ -24,6 +24,7 @@ describe("ProviderSessionStartInput", () => {
         codex: {
           binaryPath: "/usr/local/bin/codex",
           homePath: "/tmp/.codex",
+          skillPaths: ["/tmp/shared-skills", "/tmp/more-skills"],
         },
       },
     });
@@ -32,6 +33,10 @@ describe("ProviderSessionStartInput", () => {
     expect(parsed.modelOptions?.codex?.fastMode).toBe(true);
     expect(parsed.providerOptions?.codex?.binaryPath).toBe("/usr/local/bin/codex");
     expect(parsed.providerOptions?.codex?.homePath).toBe("/tmp/.codex");
+    expect(parsed.providerOptions?.codex?.skillPaths).toEqual([
+      "/tmp/shared-skills",
+      "/tmp/more-skills",
+    ]);
   });
 
   it("rejects payloads without runtime mode", () => {

@@ -79,6 +79,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         model: "gpt-5",
         interactionMode: "default",
         runtimeMode: "full-access",
+        selectedSkillIds: [],
         branch: "main",
         worktreePath: null,
         latestTurn: null,

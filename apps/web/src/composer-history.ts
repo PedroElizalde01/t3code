@@ -29,7 +29,10 @@ function normalizeSnapshot(snapshot: ComposerHistorySnapshot): ComposerHistorySn
   };
 }
 
-function normalizedHistoryEntrySnapshot(entries: readonly string[], index: number): ComposerHistorySnapshot {
+function normalizedHistoryEntrySnapshot(
+  entries: readonly string[],
+  index: number,
+): ComposerHistorySnapshot {
   const value = entries[index] ?? "";
   return {
     value,
@@ -37,10 +40,7 @@ function normalizedHistoryEntrySnapshot(entries: readonly string[], index: numbe
   };
 }
 
-function normalizeHistoryIndex(
-  entries: readonly string[],
-  index: number | null,
-): number | null {
+function normalizeHistoryIndex(entries: readonly string[], index: number | null): number | null {
   if (index === null || entries.length === 0) {
     return null;
   }
@@ -75,12 +75,10 @@ export function navigateComposerHistory(input: {
   entries: readonly string[];
   snapshot: ComposerHistorySnapshot;
   state: ComposerHistoryState;
-}):
-  | {
-      state: ComposerHistoryState;
-      snapshot: ComposerHistorySnapshot;
-    }
-  | null {
+}): {
+  state: ComposerHistoryState;
+  snapshot: ComposerHistorySnapshot;
+} | null {
   const snapshot = normalizeSnapshot(input.snapshot);
   const currentIndex = normalizeHistoryIndex(input.entries, input.state.index);
 

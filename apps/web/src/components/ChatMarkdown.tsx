@@ -25,9 +25,6 @@ import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
-import { resolveMarkdownFileLinkTarget } from "../markdown-links";
-import { readNativeApi } from "../nativeApi";
-import { preferredTerminalEditor } from "../terminal-links";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -309,7 +306,7 @@ function SuspenseShikiCodeBlock({
   );
 }
 
-function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
+function ChatMarkdown({ text, cwd: _cwd, isStreaming = false }: ChatMarkdownProps) {
   const markdownRef = useRef<HTMLDivElement | null>(null);
   const inlineCodeFeedbackTimersRef = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>());
   const { resolvedTheme } = useTheme();
@@ -317,27 +314,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
   const markdownComponents = useMemo<Components>(
     () => ({
       a({ node: _node, href, ...props }) {
-        const targetPath = resolveMarkdownFileLinkTarget(href, cwd);
-        if (!targetPath) {
-          return <a {...props} href={href} target="_blank" rel="noreferrer" />;
-        }
-
-        return (
-          <a
-            {...props}
-            href={href}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              const api = readNativeApi();
-              if (api) {
-                void api.shell.openInEditor(targetPath, preferredTerminalEditor());
-              } else {
-                console.warn("Native API not found. Unable to open file in editor.");
-              }
-            }}
-          />
-        );
+        return <a {...props} href={href} target="_blank" rel="noreferrer" />;
       },
       pre({ node: _node, children, ...props }) {
         const codeBlock = extractCodeBlock(children);
@@ -364,7 +341,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
         return <MarkdownBlockquote {...props}>{children}</MarkdownBlockquote>;
       },
     }),
-    [cwd, diffThemeName, isStreaming],
+    [diffThemeName, isStreaming],
   );
 
   const copyInlineCode = useCallback((inlineCode: HTMLElement) => {

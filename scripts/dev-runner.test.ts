@@ -1,12 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { resolve } from "node:path";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 
 import {
   DEFAULT_DEV_STATE_DIR,
   createDevRunnerEnv,
   findFirstAvailableOffset,
+  resolveExplicitDevRunnerOverrides,
   resolveModePortOffsets,
   resolveOffset,
 } from "./dev-runner.ts";
@@ -41,6 +42,60 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         );
 
         assert.ok(error.includes("Invalid T3CODE_PORT_OFFSET"));
+      }),
+    );
+  });
+
+  describe("resolveExplicitDevRunnerOverrides", () => {
+    it.effect("uses inherited env overrides in a normal shell", () =>
+      Effect.sync(() => {
+        const result = resolveExplicitDevRunnerOverrides(
+          { port: Option.none(), devUrl: Option.none() },
+          {
+            T3CODE_PORT: "4123",
+            VITE_DEV_SERVER_URL: "http://localhost:8123",
+          },
+        );
+
+        assert.equal(result.port, 4123);
+        assert.equal(result.devUrl?.toString(), "http://localhost:8123/");
+      }),
+    );
+
+    it.effect("ignores inherited desktop runtime overrides", () =>
+      Effect.sync(() => {
+        const result = resolveExplicitDevRunnerOverrides(
+          { port: Option.none(), devUrl: Option.none() },
+          {
+            T3CODE_MODE: "desktop",
+            T3CODE_PORT: "42011",
+            T3CODE_DESKTOP_WS_URL: "ws://127.0.0.1:42011/?token=test",
+            VITE_DEV_SERVER_URL: "http://localhost:42012",
+          },
+        );
+
+        assert.equal(result.port, undefined);
+        assert.equal(result.devUrl, undefined);
+      }),
+    );
+
+    it.effect("preserves explicit cli overrides even in a desktop shell", () =>
+      Effect.sync(() => {
+        const result = resolveExplicitDevRunnerOverrides(
+          {
+            port: Option.some(4999),
+            devUrl: Option.some(new URL("http://localhost:5999")),
+          },
+          {
+            T3CODE_MODE: "desktop",
+            T3CODE_PORT: "42011",
+            T3CODE_DESKTOP_WS_URL: "ws://127.0.0.1:42011/?token=test",
+            VITE_DEV_SERVER_URL: "http://localhost:42012",
+          },
+        );
+
+        assert.equal(result.port, 4999);
+        assert.equal(result.devUrl?.toString(), "http://localhost:5999/");
       }),
     );
   });

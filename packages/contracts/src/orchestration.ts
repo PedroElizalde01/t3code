@@ -1,5 +1,7 @@
 import { Option, Schema, SchemaIssue, Struct } from "effect";
 import { ProviderModelOptions } from "./model";
+import { SkillIdList } from "./skills";
+import { SkillSearchPathList } from "./skills";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -46,6 +48,7 @@ export const DEFAULT_PROVIDER_KIND: ProviderKind = "codex";
 const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
+  skillPaths: Schema.optional(SkillSearchPathList),
 });
 const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
@@ -259,6 +262,7 @@ export const OrchestrationThread = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  selectedSkillIds: SkillIdList,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -318,6 +322,7 @@ const ThreadCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  selectedSkillIds: SkillIdList,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -352,6 +357,14 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSkillsSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.skills.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  selectedSkillIds: SkillIdList,
   createdAt: IsoDateTime,
 });
 
@@ -447,6 +460,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadSkillsSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -466,6 +480,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
+  ThreadSkillsSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -566,6 +581,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
+  "thread.skills-set",
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
@@ -618,6 +634,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  selectedSkillIds: SkillIdList,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -649,6 +666,12 @@ export const ThreadInteractionModeSetPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSkillsSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  selectedSkillIds: SkillIdList,
   updatedAt: IsoDateTime,
 });
 
@@ -802,6 +825,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.interaction-mode-set"),
     payload: ThreadInteractionModeSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.skills-set"),
+    payload: ThreadSkillsSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

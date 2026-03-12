@@ -159,6 +159,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           model: command.model,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
+          selectedSkillIds: command.selectedSkillIds,
           branch: command.branch,
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
@@ -256,6 +257,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           interactionMode: command.interactionMode,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.skills.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.skills-set",
+        payload: {
+          threadId: command.threadId,
+          selectedSkillIds: command.selectedSkillIds,
           updatedAt: occurredAt,
         },
       };

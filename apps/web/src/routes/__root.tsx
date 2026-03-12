@@ -162,25 +162,27 @@ function CodexCompletionNotificationObserver() {
       return;
     }
 
-    const summary = summarizeCodexCompletions(completions);
-    if (!summary) {
-      return;
-    }
-
     if (settings.enableCodexCompletionSound) {
       void playCompletionNotificationSound().catch(() => undefined);
     }
 
     if (settings.enableCodexCompletionPopupNotifications) {
-      showDesktopCompletionNotification(summary, (threadId) => {
-        if (!threadId) {
-          return;
+      for (const completion of completions) {
+        const summary = summarizeCodexCompletions([completion]);
+        if (!summary) {
+          continue;
         }
-        void navigate({
-          to: "/$threadId",
-          params: { threadId },
+
+        showDesktopCompletionNotification(summary, (threadId) => {
+          if (!threadId) {
+            return;
+          }
+          void navigate({
+            to: "/$threadId",
+            params: { threadId },
+          });
         });
-      });
+      }
     }
   }, [
     navigate,

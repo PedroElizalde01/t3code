@@ -143,13 +143,7 @@ body {
 
 .brand-wordmark {
   font-family:
-    "Geist Pixel Square",
-    "SF Mono",
-    "SFMono-Regular",
-    Consolas,
-    "Liberation Mono",
-    Menlo,
-    monospace;
+    "Geist Pixel Square", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 1.5rem;
   line-height: 1;
   letter-spacing: 0.06em;

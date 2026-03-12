@@ -97,6 +97,18 @@ const DEFAULT_BINDINGS = compile([
     command: "diff.toggle",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
+  {
+    shortcut: {
+      key: "tab",
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      modKey: false,
+    },
+    command: "chat.previous",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
   { shortcut: modShortcut("o", { shiftKey: true }), command: "chat.new" },
   { shortcut: modShortcut("n", { shiftKey: true }), command: "chat.newLocal" },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
@@ -254,6 +266,22 @@ describe("chat/editor shortcuts", () => {
     assert.isTrue(
       isChatNewShortcut(event({ key: "o", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
+      }),
+    );
+  });
+
+  it("matches chat.previous shortcut outside terminal focus", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Tab", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+      "chat.previous",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "Tab", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: true },
       }),
     );
   });

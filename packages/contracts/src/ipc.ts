@@ -26,6 +26,12 @@ import type {
 } from "./project";
 import type { ServerConfig } from "./server";
 import type {
+  ServerListSkillsInput,
+  ServerListSkillsResult,
+  ServerUpsertKeybindingInput,
+  ServerUpsertKeybindingResult,
+} from "./server";
+import type {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
@@ -35,7 +41,6 @@ import type {
   TerminalSessionSnapshot,
   TerminalWriteInput,
 } from "./terminal";
-import type { ServerUpsertKeybindingInput, ServerUpsertKeybindingResult } from "./server";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -158,6 +163,7 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    listSkills: (input: ServerListSkillsInput) => Promise<ServerListSkillsResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
   };
   orchestration: {

@@ -11,6 +11,7 @@ import {
 } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
+import { useThreadNavigationStore } from "../threadNavigationStore";
 import { Sheet, SheetPopup } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
@@ -155,6 +156,7 @@ const DiffPanelInlineSidebar = (props: {
 function ChatThreadRouteView() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const navigate = useNavigate();
+  const recordThreadVisit = useThreadNavigationStore((store) => store.recordVisit);
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
@@ -195,7 +197,9 @@ function ChatThreadRouteView() {
       void navigate({ to: "/", replace: true });
       return;
     }
-  }, [navigate, routeThreadExists, threadsHydrated, threadId]);
+
+    recordThreadVisit(threadId);
+  }, [navigate, recordThreadVisit, routeThreadExists, threadsHydrated, threadId]);
 
   if (!threadsHydrated || !routeThreadExists) {
     return null;

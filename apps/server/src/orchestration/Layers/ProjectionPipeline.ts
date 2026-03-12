@@ -423,6 +423,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             model: event.payload.model,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
+            selectedSkillIds: event.payload.selectedSkillIds,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId: null,
@@ -477,6 +478,21 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             interactionMode: event.payload.interactionMode,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.skills-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            selectedSkillIds: event.payload.selectedSkillIds,
             updatedAt: event.payload.updatedAt,
           });
           return;

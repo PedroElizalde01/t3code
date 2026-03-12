@@ -19,4 +19,28 @@ describe("ChatMarkdown", () => {
 
     await screen.unmount();
   });
+
+  it("renders path links as normal links", async () => {
+    const screen = await render(
+      <ChatMarkdown text={"[/some/path/like/this](/some/path/like/this)"} cwd={undefined} />,
+    );
+
+    const link = page.getByRole("link", { name: "/some/path/like/this" });
+
+    await expect.element(link).toHaveAttribute("href", "/some/path/like/this");
+    await expect.element(link).toHaveAttribute("target", "_blank");
+    await expect.element(link).toHaveAttribute("rel", "noreferrer");
+
+    await screen.unmount();
+  });
+
+  it("marks inline code as copyable", async () => {
+    const screen = await render(
+      <ChatMarkdown text={"Use `one-line code` here."} cwd={undefined} />,
+    );
+
+    await expect.element(page.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+
+    await screen.unmount();
+  });
 });

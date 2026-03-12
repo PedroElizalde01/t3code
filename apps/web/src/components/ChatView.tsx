@@ -16,6 +16,8 @@ import {
   type ProviderApprovalDecision,
   type ServerProviderStatus,
   type ProviderKind,
+  type SkillReference,
+  type SkillId,
   type ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
@@ -49,7 +51,11 @@ import {
 } from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import {
+  serverConfigQueryOptions,
+  serverQueryKeys,
+  serverSkillsQueryOptions,
+} from "~/lib/serverReactQuery";
 
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
@@ -95,6 +101,7 @@ import {
 } from "../pendingUserInput";
 import { resolveVisibleProviderHealthStatus } from "../providerHealth";
 import { useStore } from "../store";
+import { useThreadNavigationStore } from "../threadNavigationStore";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildPlanImplementationThreadTitle,
@@ -199,6 +206,7 @@ import {
 } from "./ui/dialog";
 import { toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
+import ChatSkillsControl from "./ChatSkillsControl";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
   commandForProjectScript,
@@ -255,8 +263,14 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+function areSkillIdListsEqual(left: readonly SkillId[], right: readonly SkillId[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 const LAST_EDITOR_KEY = "t3code:last-editor";
 const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
+const EMPTY_SKILLS: SkillReference[] = [];
+const EMPTY_SELECTED_SKILL_IDS: SkillId[] = [];
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
@@ -343,6 +357,7 @@ function buildLocalDraftThread(
     model: fallbackModel,
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
+    selectedSkillIds: [...draftThread.selectedSkillIds],
     session: null,
     messages: [],
     error,
@@ -591,6 +606,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const setStoreThreadBranch = useStore((store) => store.setThreadBranch);
   const { settings } = useAppSettings();
   const navigate = useNavigate();
+  const previousThreadId = useThreadNavigationStore((store) => store.previousThreadId);
   const rawSearch = useSearch({
     strict: false,
     select: (params) => parseDiffRouteSearch(params),
@@ -621,6 +637,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (store) => store.syncPersistedAttachments,
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  const setComposerDraftSelectedSkillIds = useComposerDraftStore(
+    (store) => store.setSelectedSkillIds,
+  );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const getDraftThreadByProjectId = useComposerDraftStore(
     (store) => store.getDraftThreadByProjectId,
@@ -766,6 +785,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const selectedSkillIds =
+    composerDraft.selectedSkillIds ?? activeThread?.selectedSkillIds ?? EMPTY_SELECTED_SKILL_IDS;
   const isServerThread = serverThread !== undefined;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
@@ -917,16 +938,30 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
   }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
   const providerOptionsForDispatch = useMemo(() => {
-    if (!settings.codexBinaryPath && !settings.codexHomePath) {
+    if (
+      !settings.codexBinaryPath &&
+      !settings.codexHomePath &&
+      settings.codexSkillPaths.length === 0
+    ) {
       return undefined;
     }
     return {
       codex: {
         ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
         ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
+        ...(settings.codexSkillPaths.length > 0 ? { skillPaths: settings.codexSkillPaths } : {}),
       },
     };
-  }, [settings.codexBinaryPath, settings.codexHomePath]);
+  }, [settings.codexBinaryPath, settings.codexHomePath, settings.codexSkillPaths]);
+  const skillsQueryInput = useMemo(
+    () => ({
+      ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
+      ...(settings.codexSkillPaths.length > 0 ? { skillPaths: settings.codexSkillPaths } : {}),
+      includeSystem: false,
+    }),
+    [settings.codexHomePath, settings.codexSkillPaths],
+  );
+  const availableSkillsQuery = useQuery(serverSkillsQueryOptions(skillsQueryInput));
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
     () => getCustomModelOptionsByProvider(settings),
@@ -1809,6 +1844,25 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
+  const handleSelectedSkillIdsChange = useCallback(
+    (nextSelectedSkillIds: SkillId[]) => {
+      if (areSkillIdListsEqual(nextSelectedSkillIds, selectedSkillIds)) {
+        return;
+      }
+      if (isLocalDraftThread) {
+        setDraftThreadContext(threadId, { selectedSkillIds: nextSelectedSkillIds });
+        return;
+      }
+      setComposerDraftSelectedSkillIds(threadId, nextSelectedSkillIds);
+    },
+    [
+      isLocalDraftThread,
+      selectedSkillIds,
+      setComposerDraftSelectedSkillIds,
+      setDraftThreadContext,
+      threadId,
+    ],
+  );
   const toggleRuntimeMode = useCallback(() => {
     void handleRuntimeModeChange(
       runtimeMode === "full-access" ? "approval-required" : "full-access",
@@ -1835,6 +1889,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       model?: string;
       runtimeMode: RuntimeMode;
       interactionMode: ProviderInteractionMode;
+      selectedSkillIds: SkillId[];
     }) => {
       if (!serverThread) {
         return;
@@ -1869,6 +1924,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
           commandId: newCommandId(),
           threadId: input.threadId,
           interactionMode: input.interactionMode,
+          createdAt: input.createdAt,
+        });
+      }
+
+      if (!areSkillIdListsEqual(input.selectedSkillIds, serverThread.selectedSkillIds)) {
+        await api.orchestration.dispatchCommand({
+          type: "thread.skills.set",
+          commandId: newCommandId(),
+          threadId: input.threadId,
+          selectedSkillIds: input.selectedSkillIds,
           createdAt: input.createdAt,
         });
       }
@@ -2422,6 +2487,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
 
+      if (command === "chat.previous") {
+        if (!previousThreadId || previousThreadId === activeThreadId) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({
+          to: "/$threadId",
+          params: { threadId: previousThreadId },
+        });
+        return;
+      }
+
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
       const script = activeProject.scripts.find((entry) => entry.id === scriptId);
@@ -2443,7 +2521,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     runProjectScript,
     splitTerminal,
     keybindings,
+    navigate,
     onToggleDiff,
+    previousThreadId,
     toggleTerminalVisibility,
   ]);
 
@@ -2755,6 +2835,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           model: threadCreateModel,
           runtimeMode,
           interactionMode,
+          selectedSkillIds,
           branch: nextThreadBranch,
           worktreePath: nextThreadWorktreePath,
           createdAt: activeThread.createdAt,
@@ -2805,6 +2886,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModel ? { model: selectedModel } : {}),
           runtimeMode,
           interactionMode,
+          selectedSkillIds,
         });
       }
 
@@ -3079,6 +3161,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModel ? { model: selectedModel } : {}),
           runtimeMode,
           interactionMode: nextInteractionMode,
+          selectedSkillIds,
         });
 
         // Keep the mode toggle and plan-follow-up banner in sync immediately
@@ -3136,6 +3219,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       persistThreadSettingsForNextTurn,
       resetSendPhase,
       runtimeMode,
+      selectedSkillIds,
       selectedModel,
       selectedModelOptionsForDispatch,
       providerOptionsForDispatch,
@@ -3189,6 +3273,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         model: nextThreadModel,
         runtimeMode,
         interactionMode: "default",
+        selectedSkillIds,
         branch: activeThread.branch,
         worktreePath: activeThread.worktreePath,
         createdAt,
@@ -3259,6 +3344,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     navigate,
     resetSendPhase,
     runtimeMode,
+    selectedSkillIds,
     selectedModel,
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
@@ -3645,6 +3731,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
           isGitRepo={isGitRepo}
           openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
           activeProjectScripts={activeProject?.scripts}
+          availableSkills={availableSkillsQuery.data ?? EMPTY_SKILLS}
+          selectedSkillIds={selectedSkillIds}
+          skillsLoading={availableSkillsQuery.isPending}
+          skillsErrorMessage={
+            availableSkillsQuery.isError
+              ? availableSkillsQuery.error instanceof Error
+                ? availableSkillsQuery.error.message
+                : "Unable to load configured skills."
+              : null
+          }
           preferredScriptId={
             activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
           }
@@ -3659,6 +3755,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
+          onRefreshSkills={() => {
+            void availableSkillsQuery.refetch();
+          }}
+          onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
           onToggleDiff={onToggleDiff}
         />
       </header>
@@ -3723,8 +3823,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
             >
               <div
                 className={cn(
-                  "group rounded-[20px] border bg-card transition-colors duration-200 focus-within:border-white",
-                  isDragOverComposer ? "border-white bg-accent/30" : "border-border",
+                  "group rounded-[20px] border bg-card transition-colors duration-200 focus-within:border-white/55",
+                  isDragOverComposer ? "border-white/55 bg-accent/30" : "border-border",
                 )}
                 onDragEnter={onComposerDragEnter}
                 onDragOver={onComposerDragOver}
@@ -4349,6 +4449,10 @@ interface ChatHeaderProps {
   isGitRepo: boolean;
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
+  availableSkills: ReadonlyArray<SkillReference>;
+  selectedSkillIds: SkillId[];
+  skillsLoading: boolean;
+  skillsErrorMessage: string | null;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
@@ -4359,6 +4463,8 @@ interface ChatHeaderProps {
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
+  onRefreshSkills: () => void;
+  onSelectedSkillIdsChange: (selectedSkillIds: SkillId[]) => void;
   onToggleDiff: () => void;
 }
 
@@ -4369,6 +4475,10 @@ const ChatHeader = memo(function ChatHeader({
   isGitRepo,
   openInCwd,
   activeProjectScripts,
+  availableSkills,
+  selectedSkillIds,
+  skillsLoading,
+  skillsErrorMessage,
   preferredScriptId,
   keybindings,
   availableEditors,
@@ -4379,6 +4489,8 @@ const ChatHeader = memo(function ChatHeader({
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
+  onRefreshSkills,
+  onSelectedSkillIdsChange,
   onToggleDiff,
 }: ChatHeaderProps) {
   return (
@@ -4403,6 +4515,14 @@ const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="@container/header-actions flex min-w-0 flex-1 items-center justify-end gap-2 @sm/header-actions:gap-3">
+        <ChatSkillsControl
+          skills={availableSkills}
+          selectedSkillIds={selectedSkillIds}
+          loading={skillsLoading}
+          errorMessage={skillsErrorMessage}
+          onRefresh={onRefreshSkills}
+          onSelectedSkillIdsChange={onSelectedSkillIdsChange}
+        />
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

@@ -17,6 +17,7 @@ import {
   ThreadCreatedPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
+  ThreadSkillsSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
@@ -255,6 +256,7 @@ export function projectEvent(
             model: payload.model,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
+            selectedSkillIds: payload.selectedSkillIds,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
@@ -262,6 +264,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             deletedAt: null,
             messages: [],
+            proposedPlans: [],
             activities: [],
             checkpoints: [],
             session: null,
@@ -325,6 +328,17 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             interactionMode: payload.interactionMode,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.skills-set":
+      return decodeForEvent(ThreadSkillsSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            selectedSkillIds: payload.selectedSkillIds,
             updatedAt: payload.updatedAt,
           }),
         })),

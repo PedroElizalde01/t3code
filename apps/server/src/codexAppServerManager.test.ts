@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ApprovalRequestId, ThreadId } from "@t3tools/contracts";
 
 import {
+  buildCodexProcessEnv,
   buildCodexInitializeParams,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
@@ -14,10 +15,65 @@ import {
   isRecoverableThreadResumeError,
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
+  resolveCodexCommand,
   resolveCodexModelForAccount,
 } from "./codexAppServerManager";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
+
+describe("buildCodexProcessEnv", () => {
+  it("prepends an explicit codex binary directory to PATH", () => {
+    const env = buildCodexProcessEnv({
+      binaryPath: "/home/pedro/.nvm/versions/node/v22.14.0/bin/codex",
+      baseEnv: { PATH: "/usr/bin:/bin" },
+    });
+
+    expect(env.PATH).toBe("/home/pedro/.nvm/versions/node/v22.14.0/bin:/usr/bin:/bin");
+  });
+
+  it("leaves PATH unchanged for PATH-resolved codex", () => {
+    const env = buildCodexProcessEnv({
+      binaryPath: "codex",
+      baseEnv: { PATH: "/usr/bin:/bin" },
+    });
+
+    expect(env.PATH).toBe("/usr/bin:/bin");
+  });
+});
+
+describe("resolveCodexCommand", () => {
+  it("executes explicit node-shebang codex scripts through the sibling node binary", () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codex-command-"));
+    const binDir = path.join(tmpDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const codexPath = path.join(binDir, "codex");
+    const nodePath = path.join(binDir, "node");
+    writeFileSync(codexPath, "#!/usr/bin/env node\nconsole.log('ok')\n", "utf8");
+    writeFileSync(nodePath, "", "utf8");
+
+    try {
+      const command = resolveCodexCommand({
+        binaryPath: codexPath,
+        args: ["app-server"],
+      });
+
+      expect(command.command).toBe(nodePath);
+      expect(command.args).toEqual([codexPath, "app-server"]);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves non-script binaries unchanged", () => {
+    const command = resolveCodexCommand({
+      binaryPath: "codex",
+      args: ["app-server"],
+    });
+
+    expect(command.command).toBe("codex");
+    expect(command.args).toEqual(["app-server"]);
+  });
+});
 
 function createSendTurnHarness() {
   const manager = new CodexAppServerManager();
@@ -469,7 +525,14 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: [
+            CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+            "",
+            "## Chat Skills Policy",
+            "No chat skills are selected for this chat.",
+            "Do not use any Codex skills for this turn.",
+            "Ignore repository, session, global, or ambient skill catalogs unless the user explicitly asks to add skills to this chat.",
+          ].join("\n"),
         },
       },
     });
@@ -499,7 +562,65 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: [
+            CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+            "",
+            "## Chat Skills Policy",
+            "No chat skills are selected for this chat.",
+            "Do not use any Codex skills for this turn.",
+            "Ignore repository, session, global, or ambient skill catalogs unless the user explicitly asks to add skills to this chat.",
+          ].join("\n"),
+        },
+      },
+    });
+  });
+
+  it("treats selected chat skills as mandatory turn instructions", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Build the UI",
+      interactionMode: "default",
+      selectedSkills: [
+        {
+          id: "frontend-design" as never,
+          name: "frontend-design" as never,
+          description: "Create distinctive, production-grade frontend interfaces.",
+          path: "/home/pedro/.agents/skills/frontend-design/SKILL.md" as never,
+          system: false,
+        },
+      ],
+    });
+
+    expect(sendRequest).toHaveBeenCalledWith(context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Build the UI",
+          text_elements: [],
+        },
+      ],
+      model: "gpt-5.3-codex",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.3-codex",
+          reasoning_effort: "medium",
+          developer_instructions: [
+            CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+            "",
+            "## Chat Skills Policy",
+            "For this chat, the only Codex skills you may use are the selected chat skills listed below.",
+            "Treat every listed chat skill as active and mandatory for this turn.",
+            "You must load and follow each listed skill before responding, even if the user does not explicitly mention it again.",
+            "Do not use any other repository, session, global, or ambient skills unless they are also listed below.",
+            "If a listed skill cannot be applied cleanly, say so briefly and continue with the best available fallback.",
+            "",
+            "## Selected Chat Skills",
+            "- frontend-design: Create distinctive, production-grade frontend interfaces. (file: /home/pedro/.agents/skills/frontend-design/SKILL.md)",
+          ].join("\n"),
         },
       },
     });
@@ -530,7 +651,14 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.2-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: [
+            CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+            "",
+            "## Chat Skills Policy",
+            "No chat skills are selected for this chat.",
+            "Do not use any Codex skills for this turn.",
+            "Ignore repository, session, global, or ambient skill catalogs unless the user explicitly asks to add skills to this chat.",
+          ].join("\n"),
         },
       },
     });

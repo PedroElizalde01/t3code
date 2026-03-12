@@ -3,10 +3,10 @@ import { Effect, Path } from "effect";
 import { readPathFromLoginShell } from "@t3tools/shared/shell";
 
 export function fixPath(): void {
-  if (process.platform !== "darwin") return;
+  if (process.platform === "win32") return;
 
   try {
-    const shell = process.env.SHELL ?? "/bin/zsh";
+    const shell = process.env.SHELL ?? (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
     const result = readPathFromLoginShell(shell);
     if (result) {
       process.env.PATH = result;

@@ -78,6 +78,7 @@ import { expandHomePath } from "./os-jank.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
+import { listCodexSkills } from "./codexSkills.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -667,6 +668,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           model: bootstrapProjectDefaultModel,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
+          selectedSkillIds: [],
           branch: null,
           worktreePath: null,
           createdAt,
@@ -876,6 +878,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providers: providerStatuses,
           availableEditors,
         };
+
+      case WS_METHODS.serverListSkills: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: () =>
+            listCodexSkills({
+              ...(body.homePath !== undefined ? { homePath: body.homePath } : {}),
+              ...(body.skillPaths !== undefined ? { skillPaths: body.skillPaths } : {}),
+              ...(body.includeSystem !== undefined ? { includeSystem: body.includeSystem } : {}),
+            }),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: Cause.pretty(Cause.fail(cause)),
+            }),
+        });
+      }
 
       case WS_METHODS.serverUpsertKeybinding: {
         const body = stripRequestTag(request.body);

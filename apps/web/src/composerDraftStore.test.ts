@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   type ComposerImageAttachment,
+  type PersistedComposerImageAttachment,
   createDebouncedStorage,
   useComposerDraftStore,
 } from "./composerDraftStore";
@@ -32,6 +33,43 @@ function makeImage(input: {
     previewUrl: input.previewUrl,
     file,
   };
+}
+
+function makePersistedAttachment(image: ComposerImageAttachment): PersistedComposerImageAttachment {
+  return {
+    id: image.id,
+    name: image.name,
+    mimeType: image.mimeType,
+    sizeBytes: image.sizeBytes,
+    dataUrl: `data:${image.mimeType};base64,${btoa("\x01".repeat(image.sizeBytes))}`,
+  };
+}
+
+type MockBrowserStorage = {
+  clear: ReturnType<typeof vi.fn<() => void>>;
+  getItem: ReturnType<typeof vi.fn<(name: string) => string | null>>;
+  removeItem: ReturnType<typeof vi.fn<(name: string) => void>>;
+  setItem: ReturnType<typeof vi.fn<(name: string, value: string) => void>>;
+};
+
+function createMockBrowserStorage(): {
+  backingStore: Map<string, string>;
+  storage: MockBrowserStorage;
+} {
+  const backingStore = new Map<string, string>();
+  const storage: MockBrowserStorage = {
+    getItem: vi.fn((name: string) => backingStore.get(name) ?? null),
+    setItem: vi.fn((name: string, value: string) => {
+      backingStore.set(name, value);
+    }),
+    removeItem: vi.fn((name: string) => {
+      backingStore.delete(name);
+    }),
+    clear: vi.fn(() => {
+      backingStore.clear();
+    }),
+  };
+  return { backingStore, storage };
 }
 
 describe("composerDraftStore addImages", () => {
@@ -455,6 +493,141 @@ describe("composerDraftStore runtime and interaction settings", () => {
     store.setInteractionMode(threadId, null);
 
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+  });
+});
+
+describe("composerDraftStore attachment persistence", () => {
+  const threadId = ThreadId.makeUnsafe("thread-attachment-persistence");
+  let backingStore: Map<string, string>;
+  let browserStorage: MockBrowserStorage;
+  let composerDraftStoreModule: typeof import("./composerDraftStore");
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    ({ backingStore, storage: browserStorage } = createMockBrowserStorage());
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("localStorage", browserStorage);
+    composerDraftStoreModule = await import("./composerDraftStore");
+    composerDraftStoreModule.useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+    composerDraftStoreModule.useComposerDraftStore.persist.clearStorage();
+  });
+
+  afterEach(() => {
+    composerDraftStoreModule.useComposerDraftStore.persist.clearStorage();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("does not mark attachments as non-persisted before the debounced write succeeds", () => {
+    const image = makeImage({
+      id: "img-persisted",
+      previewUrl: "blob:persisted",
+    });
+    const attachment = makePersistedAttachment(image);
+    const store = composerDraftStoreModule.useComposerDraftStore.getState();
+
+    store.addImage(threadId, image);
+    store.syncPersistedAttachments(threadId, [attachment]);
+
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId]
+        ?.nonPersistedImageIds,
+    ).toEqual([]);
+
+    vi.advanceTimersByTime(300);
+
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId],
+    ).toMatchObject({
+      persistedAttachments: [attachment],
+      nonPersistedImageIds: [],
+    });
+    expect(backingStore.get(composerDraftStoreModule.COMPOSER_DRAFT_STORAGE_KEY)).toContain(
+      image.id,
+    );
+  });
+
+  it("marks attachments as non-persisted when the debounced storage write fails", () => {
+    const image = makeImage({
+      id: "img-failure",
+      previewUrl: "blob:failure",
+    });
+    const attachment = makePersistedAttachment(image);
+    browserStorage.setItem.mockImplementation((name, value) => {
+      if (name === composerDraftStoreModule.COMPOSER_DRAFT_STORAGE_KEY) {
+        void value;
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      }
+      backingStore.set(name, value);
+    });
+
+    const store = composerDraftStoreModule.useComposerDraftStore.getState();
+    store.addImage(threadId, image);
+    store.syncPersistedAttachments(threadId, [attachment]);
+
+    vi.advanceTimersByTime(300);
+
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId],
+    ).toMatchObject({
+      persistedAttachments: [],
+      nonPersistedImageIds: [image.id],
+    });
+    expect(backingStore.get(composerDraftStoreModule.COMPOSER_DRAFT_STORAGE_KEY)).toBeUndefined();
+  });
+
+  it("rehydrates persisted attachments into the composer draft", async () => {
+    const image = makeImage({
+      id: "img-hydrated",
+      previewUrl: "blob:hydrated",
+    });
+    const attachment = makePersistedAttachment(image);
+    browserStorage.setItem(
+      composerDraftStoreModule.COMPOSER_DRAFT_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          draftsByThreadId: {
+            [threadId]: {
+              prompt: "restored prompt",
+              attachments: [attachment],
+              provider: "codex",
+            },
+          },
+          draftThreadsByThreadId: {},
+          projectDraftThreadIdByProjectId: {},
+        },
+        version: 1,
+      }),
+    );
+
+    await composerDraftStoreModule.useComposerDraftStore.persist.rehydrate();
+
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId],
+    ).toMatchObject({
+      prompt: "restored prompt",
+      persistedAttachments: [attachment],
+      nonPersistedImageIds: [],
+      provider: "codex",
+    });
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId]?.images,
+    ).toHaveLength(1);
+    expect(
+      composerDraftStoreModule.useComposerDraftStore.getState().draftsByThreadId[threadId]
+        ?.images[0],
+    ).toMatchObject({
+      id: image.id,
+      previewUrl: attachment.dataUrl,
+      name: image.name,
+      mimeType: image.mimeType,
+    });
   });
 });
 

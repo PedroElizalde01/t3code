@@ -1,6 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 import {
@@ -13,6 +15,7 @@ import {
   TurnId,
   type ProviderApprovalDecision,
   type ProviderEvent,
+  type SkillReference,
   type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
@@ -121,6 +124,7 @@ export interface CodexAppServerSendTurnInput {
   readonly serviceTier?: string | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly selectedSkills?: ReadonlyArray<SkillReference>;
 }
 
 export interface CodexAppServerStartSessionInput {
@@ -418,6 +422,7 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: "default" | "plan";
   readonly model?: string;
   readonly effort?: string;
+  readonly selectedSkills?: ReadonlyArray<SkillReference>;
 }):
   | {
       mode: "default" | "plan";
@@ -432,15 +437,42 @@ function buildCodexCollaborationMode(input: {
     return undefined;
   }
   const model = normalizeCodexModelSlug(input.model) ?? "gpt-5.3-codex";
+  const chatSkillsInstructions =
+    input.selectedSkills && input.selectedSkills.length > 0
+      ? [
+          "",
+          "## Chat Skills Policy",
+          "For this chat, the only Codex skills you may use are the selected chat skills listed below.",
+          "Treat every listed chat skill as active and mandatory for this turn.",
+          "You must load and follow each listed skill before responding, even if the user does not explicitly mention it again.",
+          "Do not use any other repository, session, global, or ambient skills unless they are also listed below.",
+          "If a listed skill cannot be applied cleanly, say so briefly and continue with the best available fallback.",
+          "",
+          "## Selected Chat Skills",
+          ...input.selectedSkills.map(
+            (skill) =>
+              `- ${skill.name}: ${skill.description || "No description provided."} (file: ${skill.path})`,
+          ),
+        ].join("\n")
+      : [
+          "",
+          "## Chat Skills Policy",
+          "No chat skills are selected for this chat.",
+          "Do not use any Codex skills for this turn.",
+          "Ignore repository, session, global, or ambient skill catalogs unless the user explicitly asks to add skills to this chat.",
+        ].join("\n");
+  const developerInstructions = [
+    input.interactionMode === "plan"
+      ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+      : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+    chatSkillsInstructions,
+  ].join("\n");
   return {
     mode: input.interactionMode,
     settings: {
       model,
       reasoning_effort: input.effort ?? "medium",
-      developer_instructions:
-        input.interactionMode === "plan"
-          ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-          : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      developer_instructions: developerInstructions,
     },
   };
 }
@@ -548,12 +580,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const child = spawn(codexBinaryPath, ["app-server"], {
+      const command = resolveCodexCommand({
+        binaryPath: codexBinaryPath,
+        args: ["app-server"],
+      });
+      const child = spawn(command.command, command.args, {
         cwd: resolvedCwd,
-        env: {
-          ...process.env,
-          ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-        },
+        env: buildCodexProcessEnv({
+          binaryPath: codexBinaryPath,
+          ...(codexHomePath ? { homePath: codexHomePath } : {}),
+        }),
         stdio: ["pipe", "pipe", "pipe"],
         shell: process.platform === "win32",
       });
@@ -800,6 +836,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.selectedSkills !== undefined ? { selectedSkills: input.selectedSkills } : {}),
     });
     if (collaborationMode) {
       if (!turnStartParams.model) {
@@ -1521,17 +1558,87 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
   };
 }
 
+function hasExplicitBinaryPath(value: string): boolean {
+  return value.includes("/") || value.includes("\\");
+}
+
+function prependPathEntry(entry: string, currentPath: string | undefined): string {
+  const existingEntries = (currentPath ?? "")
+    .split(path.delimiter)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0 && segment !== entry);
+  return [entry, ...existingEntries].join(path.delimiter);
+}
+
+export function buildCodexProcessEnv(input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly baseEnv?: NodeJS.ProcessEnv;
+}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...(input.baseEnv ?? process.env),
+    ...(input.homePath ? { CODEX_HOME: input.homePath } : {}),
+  };
+
+  if (hasExplicitBinaryPath(input.binaryPath)) {
+    env.PATH = prependPathEntry(path.dirname(input.binaryPath), env.PATH);
+  }
+
+  return env;
+}
+
+function resolveSiblingNodeBinary(binaryPath: string): string | null {
+  const candidate = path.join(
+    path.dirname(binaryPath),
+    process.platform === "win32" ? "node.exe" : "node",
+  );
+  return existsSync(candidate) ? candidate : null;
+}
+
+function isNodeShebangScript(binaryPath: string): boolean {
+  if (!hasExplicitBinaryPath(binaryPath)) return false;
+
+  try {
+    const header = readFileSync(binaryPath, "utf8").slice(0, 256);
+    const firstLine = header.split(/\r?\n/, 1)[0] ?? "";
+    return /^#!.*\bnode(?:\s|$)/.test(firstLine);
+  } catch {
+    return false;
+  }
+}
+
+export function resolveCodexCommand(input: {
+  readonly binaryPath: string;
+  readonly args: ReadonlyArray<string>;
+}): { command: string; args: string[] } {
+  if (isNodeShebangScript(input.binaryPath)) {
+    const siblingNode = resolveSiblingNodeBinary(input.binaryPath);
+    if (siblingNode) {
+      return {
+        command: siblingNode,
+        args: [input.binaryPath, ...input.args],
+      };
+    }
+  }
+
+  return {
+    command: input.binaryPath,
+    args: [...input.args],
+  };
+}
+
 function assertSupportedCodexCliVersion(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
 }): void {
-  const result = spawnSync(input.binaryPath, ["--version"], {
+  const command = resolveCodexCommand({
+    binaryPath: input.binaryPath,
+    args: ["--version"],
+  });
+  const result = spawnSync(command.command, command.args, {
     cwd: input.cwd,
-    env: {
-      ...process.env,
-      ...(input.homePath ? { CODEX_HOME: input.homePath } : {}),
-    },
+    env: buildCodexProcessEnv(input),
     encoding: "utf8",
     shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],

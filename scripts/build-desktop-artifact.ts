@@ -33,6 +33,11 @@ const ProductionLinuxIconSource = Effect.zipWith(
   Effect.service(Path.Path),
   (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionLinuxIconPng),
 );
+const ProductionLinuxIconSetSource = Effect.zipWith(
+  RepoRoot,
+  Effect.service(Path.Path),
+  (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionLinuxIconSetDir),
+);
 const ProductionWindowsIconSource = Effect.zipWith(
   RepoRoot,
   Effect.service(Path.Path),
@@ -338,14 +343,22 @@ function stageLinuxIcons(stageResourcesDir: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const iconSource = yield* ProductionLinuxIconSource;
+    const iconSetSource = yield* ProductionLinuxIconSetSource;
     if (!(yield* fs.exists(iconSource))) {
       return yield* new BuildScriptError({
         message: `Production icon source is missing at ${iconSource}`,
       });
     }
+    if (!(yield* fs.exists(iconSetSource))) {
+      return yield* new BuildScriptError({
+        message: `Production Linux icon set is missing at ${iconSetSource}`,
+      });
+    }
 
     const iconPath = path.join(stageResourcesDir, "icon.png");
+    const iconSetPath = path.join(stageResourcesDir, "linux-icons");
     yield* fs.copyFile(iconSource, iconPath);
+    yield* fs.copy(iconSetSource, iconSetPath);
   });
 }
 
@@ -455,6 +468,21 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
+    // Packaged Electron runs resolve window icons from process.resourcesPath.
+    extraResources: [
+      {
+        from: "apps/desktop/resources/icon.png",
+        to: "icon.png",
+      },
+      {
+        from: "apps/desktop/resources/icon.ico",
+        to: "icon.ico",
+      },
+      {
+        from: "apps/desktop/resources/icon.icns",
+        to: "icon.icns",
+      },
+    ],
   };
   const publishConfig = resolveGitHubPublishConfig();
   if (publishConfig) {
@@ -472,7 +500,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      icon: "icon.png",
+      icon: "linux-icons",
       category: "Development",
     };
   }
@@ -620,13 +648,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     private: true,
-    description: "ØRBIT desktop build",
+    description: "ORBIT desktop build",
     author: "T3 Tools",
     main: "apps/desktop/dist-electron/main.js",
     build: yield* createBuildConfig(
       options.platform,
       options.target,
-      desktopPackageJson.productName ?? "ØRBIT",
+      desktopPackageJson.productName ?? "ORBIT",
       options.signed,
     ),
     dependencies: {

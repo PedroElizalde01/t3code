@@ -290,6 +290,7 @@ describe("CheckpointReactor", () => {
         model: "gpt-5-codex",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
+        selectedSkillIds: [],
         branch: null,
         worktreePath: options?.threadWorktreePath ?? cwd,
         createdAt,

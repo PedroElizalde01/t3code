@@ -53,7 +53,11 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
-const ProjectionThreadDbRowSchema = ProjectionThread;
+const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
+  Struct.assign({
+    selectedSkillIds: Schema.fromJsonString(Schema.Array(Schema.String)),
+  }),
+);
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -159,6 +163,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           model,
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
+          selected_skill_ids_json AS "selectedSkillIds",
           branch,
           worktree_path AS "worktreePath",
           latest_turn_id AS "latestTurnId",
@@ -531,6 +536,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             model: row.model,
             runtimeMode: row.runtimeMode,
             interactionMode: row.interactionMode,
+            selectedSkillIds: row.selectedSkillIds,
             branch: row.branch,
             worktreePath: row.worktreePath,
             latestTurn: latestTurnByThread.get(row.threadId) ?? null,

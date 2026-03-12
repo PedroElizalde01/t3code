@@ -22,6 +22,8 @@ import {
   ProviderUserInputAnswers,
   RuntimeMode,
 } from "./orchestration";
+import { SkillReference } from "./skills";
+import { SkillSearchPathList } from "./skills";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const ProviderSessionStatus = Schema.Literals([
@@ -50,6 +52,7 @@ export type ProviderSession = typeof ProviderSession.Type;
 const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyStringSchema),
   homePath: Schema.optional(TrimmedNonEmptyStringSchema),
+  skillPaths: Schema.optional(SkillSearchPathList),
 });
 
 export const ProviderStartOptions = Schema.Struct({
@@ -82,6 +85,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   modelOptions: Schema.optional(ProviderModelOptions),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  selectedSkills: Schema.optional(Schema.Array(SkillReference)),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

@@ -5,6 +5,7 @@ import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/s
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
+const MAX_SKILL_SEARCH_PATH_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
@@ -16,6 +17,9 @@ const AppSettingsSchema = Schema.Struct({
   ),
   codexHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  codexSkillPaths: Schema.Array(Schema.String.check(Schema.isMaxLength(4096))).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
   enableCodexCompletionPopupNotifications: Schema.Boolean.pipe(
@@ -73,9 +77,30 @@ export function normalizeCustomModelSlugs(
   return normalizedModels;
 }
 
+export function normalizeSkillSearchPaths(paths: Iterable<string | null | undefined>): string[] {
+  const normalizedPaths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of paths) {
+    const normalized = candidate?.trim();
+    if (!normalized || normalized.length > 4096 || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    normalizedPaths.push(normalized);
+    if (normalizedPaths.length >= MAX_SKILL_SEARCH_PATH_COUNT) {
+      break;
+    }
+  }
+
+  return normalizedPaths;
+}
+
 function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
+    codexSkillPaths: normalizeSkillSearchPaths(settings.codexSkillPaths),
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
   };
 }

@@ -242,6 +242,7 @@ describe("ProviderCommandReactor", () => {
         model: "gpt-5-codex",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
+        selectedSkillIds: [],
         branch: null,
         worktreePath: null,
         createdAt: now,

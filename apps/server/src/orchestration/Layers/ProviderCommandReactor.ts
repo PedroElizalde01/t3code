@@ -16,6 +16,7 @@ import { Cache, Cause, Duration, Effect, Layer, Option, Schema, Stream } from "e
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { resolveCodexSkillsById } from "../../codexSkills.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { ProviderAdapterRequestError, ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -329,11 +330,15 @@ const make = Effect.gen(function* () {
     if (input.providerOptions !== undefined) {
       threadProviderOptions.set(input.threadId, input.providerOptions);
     }
+    const effectiveProviderOptions =
+      input.providerOptions ?? threadProviderOptions.get(input.threadId);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
-      ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
+      ...(effectiveProviderOptions !== undefined
+        ? { providerOptions: effectiveProviderOptions }
+        : {}),
     });
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
@@ -347,6 +352,25 @@ const make = Effect.gen(function* () {
         ? "in-session"
         : (yield* providerService.getCapabilities(activeSession.provider)).sessionModelSwitch;
     const modelForTurn = sessionModelSwitch === "unsupported" ? activeSession?.model : input.model;
+    const resolvedSelectedSkills =
+      thread.selectedSkillIds.length === 0
+        ? []
+        : (yield* Effect.tryPromise({
+            try: () =>
+              resolveCodexSkillsById({
+                ...(effectiveProviderOptions?.codex?.homePath !== undefined
+                  ? { homePath: effectiveProviderOptions.codex.homePath }
+                  : {}),
+                ...(effectiveProviderOptions?.codex?.skillPaths !== undefined
+                  ? { skillPaths: effectiveProviderOptions.codex.skillPaths }
+                  : {}),
+                skillIds: thread.selectedSkillIds,
+              }),
+            catch: (cause) => ({
+              _tag: "ResolveCodexSkillsError" as const,
+              message: Cause.pretty(Cause.fail(cause)),
+            }),
+          })).skills;
 
     yield* providerService.sendTurn({
       threadId: input.threadId,
@@ -355,6 +379,7 @@ const make = Effect.gen(function* () {
       ...(modelForTurn !== undefined ? { model: modelForTurn } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(resolvedSelectedSkills.length > 0 ? { selectedSkills: resolvedSelectedSkills } : {}),
     });
   });
 

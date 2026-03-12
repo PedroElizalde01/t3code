@@ -161,7 +161,11 @@ describe("tryHandleProjectFaviconRequest", () => {
     }
     const remoteIconUrl = `http://127.0.0.1:${address.port}/logo.svg`;
 
-    fs.writeFileSync(path.join(projectDir, ".env"), `VITE_APP_LOGO_ICON=${remoteIconUrl}\n`, "utf8");
+    fs.writeFileSync(
+      path.join(projectDir, ".env"),
+      `VITE_APP_LOGO_ICON=${remoteIconUrl}\n`,
+      "utf8",
+    );
     fs.writeFileSync(
       path.join(projectDir, "index.html"),
       '<link rel="icon" href="%VITE_APP_LOGO_ICON%">',

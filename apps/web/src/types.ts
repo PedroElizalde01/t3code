@@ -12,6 +12,7 @@ import type {
   ProviderKind,
   ProviderInteractionMode,
   RuntimeMode,
+  SkillId,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -91,6 +92,7 @@ export interface Thread {
   model: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  selectedSkillIds: SkillId[];
   session: ThreadSession | null;
   messages: ChatMessage[];
   proposedPlans: ProposedPlan[];

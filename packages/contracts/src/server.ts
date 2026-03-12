@@ -3,6 +3,7 @@ import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
 import { EditorId } from "./editor";
 import { ProviderKind } from "./orchestration";
+import { CodexSkillsListInput, CodexSkillsListResult } from "./skills";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -63,6 +64,12 @@ export const ServerUpsertKeybindingResult = Schema.Struct({
   issues: ServerConfigIssues,
 });
 export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.Type;
+
+export const ServerListSkillsInput = CodexSkillsListInput;
+export type ServerListSkillsInput = typeof ServerListSkillsInput.Type;
+
+export const ServerListSkillsResult = CodexSkillsListResult;
+export type ServerListSkillsResult = typeof ServerListSkillsResult.Type;
 
 export const ServerConfigUpdatedPayload = Schema.Struct({
   issues: ServerConfigIssues,

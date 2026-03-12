@@ -82,6 +82,7 @@ import {
   SidebarTrigger,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { useThreadNavigationStore } from "../threadNavigationStore";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
@@ -296,6 +297,7 @@ export default function Sidebar() {
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
   );
+  const draftThreadsByThreadId = useComposerDraftStore((store) => store.draftThreadsByThreadId);
   const navigate = useNavigate();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const { settings: appSettings } = useAppSettings();
@@ -331,6 +333,8 @@ export default function Sidebar() {
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
+  const clearTrackedThread = useThreadNavigationStore((state) => state.clearThread);
+  const pruneTrackedThreads = useThreadNavigationStore((state) => state.pruneThreads);
   const shouldBrowseForProjectImmediately = isElectron;
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
   const shouldOffsetDesktopBrandingForTrafficLights =
@@ -726,6 +730,7 @@ export default function Sidebar() {
       });
       clearComposerDraftForThread(threadId);
       clearProjectDraftThreadById(thread.projectId, thread.id);
+      clearTrackedThread(threadId);
       clearTerminalState(threadId);
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {
@@ -767,6 +772,7 @@ export default function Sidebar() {
     [
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
+      clearTrackedThread,
       clearTerminalState,
       navigate,
       projects,
@@ -1072,6 +1078,14 @@ export default function Sidebar() {
     },
     [toggleProject],
   );
+
+  useEffect(() => {
+    const validThreadIds = [
+      ...threads.map((thread) => thread.id),
+      ...Object.keys(draftThreadsByThreadId).map((threadId) => ThreadId.makeUnsafe(threadId)),
+    ];
+    pruneTrackedThreads(validThreadIds);
+  }, [draftThreadsByThreadId, pruneTrackedThreads, threads]);
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
@@ -1460,20 +1474,17 @@ export default function Sidebar() {
                 strategy={verticalListSortingStrategy}
               >
                 {projects.map((project) => {
-                  const projectThreads = threads.filter(
-                    (thread) => thread.projectId === project.id,
-                  );
-                  const orderedProjectThreads = orderThreadsForSidebar(
-                    projectThreads,
+                  const projectThreads = orderThreadsForSidebar(
+                    threads.filter((thread) => thread.projectId === project.id),
                     pinnedThreadIdSet,
                   );
                   const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
-                  const hasHiddenThreads = orderedProjectThreads.length > THREAD_PREVIEW_LIMIT;
+                  const hasHiddenThreads = projectThreads.length > THREAD_PREVIEW_LIMIT;
                   const visibleThreads =
                     hasHiddenThreads && !isThreadListExpanded
-                      ? orderedProjectThreads.slice(0, THREAD_PREVIEW_LIMIT)
-                      : orderedProjectThreads;
-                  const orderedProjectThreadIds = orderedProjectThreads.map((t) => t.id);
+                      ? projectThreads.slice(0, THREAD_PREVIEW_LIMIT)
+                      : projectThreads;
+                  const orderedProjectThreadIds = projectThreads.map((t) => t.id);
 
                   return (
                     <SortableProjectItem key={project.id} projectId={project.id}>
@@ -1622,9 +1633,9 @@ export default function Sidebar() {
                                             role="img"
                                             aria-label="Pinned chat"
                                             title="Pinned chat"
-                                            className="inline-flex items-center justify-center text-amber-500"
+                                            className="inline-flex items-center justify-center"
                                           >
-                                            <PinIcon className="size-3 fill-current" />
+                                            <PinIcon className="size-3 fill-current text-current" />
                                           </span>
                                         )}
                                         {prStatus && (

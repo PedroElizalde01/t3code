@@ -308,6 +308,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         ),
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
+        selectedSkillIds: [...thread.selectedSkillIds],
         session: thread.session
           ? {
               provider: toLegacyProvider(thread.session.providerName),

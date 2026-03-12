@@ -41,6 +41,12 @@ it.effect("parses keybinding rules", () =>
     });
     assert.strictEqual(parsedDiffToggle.command, "diff.toggle");
 
+    const parsedPrevious = yield* decode(KeybindingRule, {
+      key: "ctrl+tab",
+      command: "chat.previous",
+    });
+    assert.strictEqual(parsedPrevious.command, "chat.previous");
+
     const parsedLocal = yield* decode(KeybindingRule, {
       key: "mod+shift+n",
       command: "chat.newLocal",

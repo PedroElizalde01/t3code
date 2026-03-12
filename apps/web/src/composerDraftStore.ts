@@ -2,6 +2,7 @@ import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   ProjectId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
+  type SkillId,
   ThreadId,
   type CodexReasoningEffort,
   type ProviderKind,
@@ -19,14 +20,33 @@ export type DraftThreadEnvMode = "local" | "worktree";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
+interface DebouncedStorageWriteEvent {
+  name: string;
+  operation: "remove" | "set";
+  value: string | null;
+  error?: unknown;
+}
+
 interface DebouncedStorage extends StateStorage {
   flush: () => void;
+  subscribe: (listener: (event: DebouncedStorageWriteEvent) => void) => () => void;
 }
 
 export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStorage {
+  const listeners = new Set<(event: DebouncedStorageWriteEvent) => void>();
+  const notifyListeners = (event: DebouncedStorageWriteEvent) => {
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
   const debouncedSetItem = new Debouncer(
     (name: string, value: string) => {
-      baseStorage.setItem(name, value);
+      try {
+        baseStorage.setItem(name, value);
+        notifyListeners({ name, operation: "set", value });
+      } catch (error) {
+        notifyListeners({ name, operation: "set", value, error });
+      }
     },
     { wait: COMPOSER_PERSIST_DEBOUNCE_MS },
   );
@@ -38,10 +58,21 @@ export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStor
     },
     removeItem: (name) => {
       debouncedSetItem.cancel();
-      baseStorage.removeItem(name);
+      try {
+        baseStorage.removeItem(name);
+        notifyListeners({ name, operation: "remove", value: null });
+      } catch (error) {
+        notifyListeners({ name, operation: "remove", value: null, error });
+      }
     },
     flush: () => {
       debouncedSetItem.flush();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
@@ -49,7 +80,13 @@ export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStor
 const composerDebouncedStorage: DebouncedStorage =
   typeof localStorage !== "undefined"
     ? createDebouncedStorage(localStorage)
-    : { getItem: () => null, setItem: () => {}, removeItem: () => {}, flush: () => {} };
+    : {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        flush: () => {},
+        subscribe: () => () => {},
+      };
 
 // Flush pending composer draft writes before page unload to prevent data loss.
 if (typeof window !== "undefined") {
@@ -78,6 +115,7 @@ interface PersistedComposerThreadDraftState {
   model?: string | null;
   runtimeMode?: RuntimeMode | null;
   interactionMode?: ProviderInteractionMode | null;
+  selectedSkillIds?: SkillId[] | null;
   effort?: CodexReasoningEffort | null;
   codexFastMode?: boolean | null;
   serviceTier?: string | null;
@@ -88,6 +126,7 @@ interface PersistedDraftThreadState {
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  selectedSkillIds: SkillId[];
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -108,6 +147,7 @@ interface ComposerThreadDraftState {
   model: string | null;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
+  selectedSkillIds: SkillId[] | null;
   effort: CodexReasoningEffort | null;
   codexFastMode: boolean;
 }
@@ -117,6 +157,7 @@ export interface DraftThreadState {
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  selectedSkillIds: SkillId[];
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -142,6 +183,7 @@ interface ComposerDraftStoreState {
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      selectedSkillIds?: SkillId[];
     },
   ) => void;
   setDraftThreadContext: (
@@ -154,6 +196,7 @@ interface ComposerDraftStoreState {
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      selectedSkillIds?: SkillId[];
     },
   ) => void;
   clearProjectDraftThreadId: (projectId: ProjectId) => void;
@@ -167,6 +210,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     interactionMode: ProviderInteractionMode | null | undefined,
   ) => void;
+  setSelectedSkillIds: (threadId: ThreadId, selectedSkillIds: SkillId[] | null | undefined) => void;
   setEffort: (threadId: ThreadId, effort: CodexReasoningEffort | null | undefined) => void;
   setCodexFastMode: (threadId: ThreadId, enabled: boolean | null | undefined) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
@@ -202,6 +246,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze({
   model: null,
   runtimeMode: null,
   interactionMode: null,
+  selectedSkillIds: null,
   effort: null,
   codexFastMode: false,
 }) as ComposerThreadDraftState;
@@ -220,6 +265,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     model: null,
     runtimeMode: null,
     interactionMode: null,
+    selectedSkillIds: null,
     effort: null,
     codexFastMode: false,
   };
@@ -240,6 +286,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.model === null &&
     draft.runtimeMode === null &&
     draft.interactionMode === null &&
+    draft.selectedSkillIds === null &&
     draft.effort === null &&
     draft.codexFastMode === false
   );
@@ -247,6 +294,28 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
   return value === "codex" ? value : null;
+}
+
+function normalizeSkillIds(value: unknown): SkillId[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalizedSkillIds: SkillId[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalizedSkillIds.push(trimmed as SkillId);
+  }
+
+  return normalizedSkillIds;
 }
 
 function revokeObjectPreviewUrl(previewUrl: string): void {
@@ -344,6 +413,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           candidateDraftThread.interactionMode === "default"
             ? candidateDraftThread.interactionMode
             : DEFAULT_INTERACTION_MODE,
+        selectedSkillIds: normalizeSkillIds(candidateDraftThread.selectedSkillIds),
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
@@ -372,6 +442,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
             createdAt: new Date().toISOString(),
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_INTERACTION_MODE,
+            selectedSkillIds: [],
             branch: null,
             worktreePath: null,
             envMode: "local",
@@ -418,6 +489,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
         : null;
+    const selectedSkillIds = normalizeSkillIds(draftCandidate.selectedSkillIds);
     const effortCandidate =
       typeof draftCandidate.effort === "string" ? draftCandidate.effort : null;
     const effort =
@@ -434,6 +506,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       !model &&
       !runtimeMode &&
       !interactionMode &&
+      selectedSkillIds.length === 0 &&
       !effort &&
       !codexFastMode
     ) {
@@ -446,6 +519,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       ...(model ? { model } : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
       ...(interactionMode ? { interactionMode } : {}),
+      ...(selectedSkillIds.length > 0 ? { selectedSkillIds } : {}),
       ...(effort ? { effort } : {}),
       ...(codexFastMode ? { codexFastMode } : {}),
     };
@@ -472,19 +546,51 @@ function parsePersistedDraftStateRaw(raw: string | null): PersistedComposerDraft
   }
 }
 
-function readPersistedAttachmentIdsFromStorage(threadId: ThreadId): string[] {
-  if (threadId.length === 0) {
-    return [];
-  }
-  try {
-    const raw = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-    const persisted = parsePersistedDraftStateRaw(raw);
-    return (persisted.draftsByThreadId[threadId]?.attachments ?? []).map(
-      (attachment) => attachment.id,
-    );
-  } catch {
-    return [];
-  }
+function readPersistedDraftStateFromSerializedValue(
+  raw: string | null,
+): PersistedComposerDraftStoreState {
+  return parsePersistedDraftStateRaw(raw);
+}
+
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function arePersistedAttachmentsEqual(
+  left: PersistedComposerImageAttachment[],
+  right: PersistedComposerImageAttachment[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((attachment, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        attachment.id === other.id &&
+        attachment.name === other.name &&
+        attachment.mimeType === other.mimeType &&
+        attachment.sizeBytes === other.sizeBytes &&
+        attachment.dataUrl === other.dataUrl
+      );
+    })
+  );
+}
+
+function resolveAttachmentPersistenceState(
+  draft: ComposerThreadDraftState,
+  persistedAttachments: PersistedComposerImageAttachment[],
+): Pick<ComposerThreadDraftState, "nonPersistedImageIds" | "persistedAttachments"> {
+  const imageIdSet = new Set(draft.images.map((image) => image.id));
+  const nextPersistedAttachments = persistedAttachments.filter((attachment) =>
+    imageIdSet.has(attachment.id),
+  );
+  const persistedIdSet = new Set(nextPersistedAttachments.map((attachment) => attachment.id));
+  return {
+    persistedAttachments: nextPersistedAttachments,
+    nonPersistedImageIds: draft.images
+      .map((image) => image.id)
+      .filter((imageId) => !persistedIdSet.has(imageId)),
+  };
 }
 
 function hydreatePersistedComposerImageAttachment(
@@ -552,6 +658,7 @@ function toHydratedThreadDraft(
     model: persistedDraft.model ?? null,
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
+    selectedSkillIds: persistedDraft.selectedSkillIds ?? null,
     effort: persistedDraft.effort ?? null,
     codexFastMode: persistedDraft.codexFastMode === true,
   };
@@ -606,6 +713,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               options?.interactionMode ??
               existingThread?.interactionMode ??
               DEFAULT_INTERACTION_MODE,
+            selectedSkillIds: options?.selectedSkillIds ?? existingThread?.selectedSkillIds ?? [],
             branch:
               options?.branch === undefined
                 ? (existingThread?.branch ?? null)
@@ -622,6 +730,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             existingThread.createdAt === nextDraftThread.createdAt &&
             existingThread.runtimeMode === nextDraftThread.runtimeMode &&
             existingThread.interactionMode === nextDraftThread.interactionMode &&
+            areStringArraysEqual(
+              existingThread.selectedSkillIds,
+              nextDraftThread.selectedSkillIds,
+            ) &&
             existingThread.branch === nextDraftThread.branch &&
             existingThread.worktreePath === nextDraftThread.worktreePath &&
             existingThread.envMode === nextDraftThread.envMode;
@@ -680,6 +792,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
                 : options.createdAt || existing.createdAt,
             runtimeMode: options.runtimeMode ?? existing.runtimeMode,
             interactionMode: options.interactionMode ?? existing.interactionMode,
+            selectedSkillIds: options.selectedSkillIds ?? existing.selectedSkillIds,
             branch: options.branch === undefined ? existing.branch : (options.branch ?? null),
             worktreePath: nextWorktreePath,
             envMode:
@@ -690,6 +803,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             nextDraftThread.createdAt === existing.createdAt &&
             nextDraftThread.runtimeMode === existing.runtimeMode &&
             nextDraftThread.interactionMode === existing.interactionMode &&
+            areStringArraysEqual(nextDraftThread.selectedSkillIds, existing.selectedSkillIds) &&
             nextDraftThread.branch === existing.branch &&
             nextDraftThread.worktreePath === existing.worktreePath &&
             nextDraftThread.envMode === existing.envMode;
@@ -927,6 +1041,38 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      setSelectedSkillIds: (threadId, selectedSkillIds) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        const nextSelectedSkillIds = selectedSkillIds ? normalizeSkillIds(selectedSkillIds) : null;
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          if (!existing && nextSelectedSkillIds === null) {
+            return state;
+          }
+          const base = existing ?? createEmptyThreadDraft();
+          if (
+            base.selectedSkillIds === nextSelectedSkillIds ||
+            (base.selectedSkillIds !== null &&
+              nextSelectedSkillIds !== null &&
+              areStringArraysEqual(base.selectedSkillIds, nextSelectedSkillIds))
+          ) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...base,
+            selectedSkillIds: nextSelectedSkillIds,
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       setEffort: (threadId, effort) => {
         if (threadId.length === 0) {
           return;
@@ -1115,34 +1261,6 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           return { draftsByThreadId: nextDraftsByThreadId };
         });
-        Promise.resolve().then(() => {
-          const persistedIdSet = new Set(readPersistedAttachmentIdsFromStorage(threadId));
-          set((state) => {
-            const current = state.draftsByThreadId[threadId];
-            if (!current) {
-              return state;
-            }
-            const imageIdSet = new Set(current.images.map((image) => image.id));
-            const persistedAttachments = attachments.filter(
-              (attachment) => imageIdSet.has(attachment.id) && persistedIdSet.has(attachment.id),
-            );
-            const nonPersistedImageIds = current.images
-              .map((image) => image.id)
-              .filter((imageId) => !persistedIdSet.has(imageId));
-            const nextDraft: ComposerThreadDraftState = {
-              ...current,
-              persistedAttachments,
-              nonPersistedImageIds,
-            };
-            const nextDraftsByThreadId = { ...state.draftsByThreadId };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadId[threadId];
-            } else {
-              nextDraftsByThreadId[threadId] = nextDraft;
-            }
-            return { draftsByThreadId: nextDraftsByThreadId };
-          });
-        });
       },
       clearComposerContent: (threadId) => {
         if (threadId.length === 0) {
@@ -1222,6 +1340,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             draft.model === null &&
             draft.runtimeMode === null &&
             draft.interactionMode === null &&
+            draft.selectedSkillIds === null &&
             draft.effort === null &&
             draft.codexFastMode === false
           ) {
@@ -1242,6 +1361,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           if (draft.interactionMode) {
             persistedDraft.interactionMode = draft.interactionMode;
+          }
+          if (draft.selectedSkillIds && draft.selectedSkillIds.length > 0) {
+            persistedDraft.selectedSkillIds = draft.selectedSkillIds;
           }
           if (draft.effort) {
             persistedDraft.effort = draft.effort;
@@ -1295,4 +1417,46 @@ export function clearPromotedDraftThreads(serverThreadIds: ReadonlySet<ThreadId>
       store.clearDraftThread(draftId);
     }
   }
+}
+
+if (typeof window !== "undefined") {
+  composerDebouncedStorage.subscribe((event) => {
+    if (event.name !== COMPOSER_DRAFT_STORAGE_KEY || event.operation !== "set") {
+      return;
+    }
+    const persistedState =
+      event.error === undefined
+        ? readPersistedDraftStateFromSerializedValue(event.value)
+        : readPersistedDraftStateFromSerializedValue(
+            localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY),
+          );
+    useComposerDraftStore.setState((state) => {
+      let nextDraftsByThreadId = state.draftsByThreadId;
+      for (const [threadId, draft] of Object.entries(state.draftsByThreadId) as Array<
+        [ThreadId, ComposerThreadDraftState]
+      >) {
+        const persistedAttachments = persistedState.draftsByThreadId[threadId]?.attachments ?? [];
+        const nextAttachmentState = resolveAttachmentPersistenceState(draft, persistedAttachments);
+        if (
+          arePersistedAttachmentsEqual(
+            draft.persistedAttachments,
+            nextAttachmentState.persistedAttachments,
+          ) &&
+          areStringArraysEqual(draft.nonPersistedImageIds, nextAttachmentState.nonPersistedImageIds)
+        ) {
+          continue;
+        }
+        if (nextDraftsByThreadId === state.draftsByThreadId) {
+          nextDraftsByThreadId = { ...state.draftsByThreadId };
+        }
+        nextDraftsByThreadId[threadId] = {
+          ...draft,
+          ...nextAttachmentState,
+        };
+      }
+      return nextDraftsByThreadId === state.draftsByThreadId
+        ? state
+        : { draftsByThreadId: nextDraftsByThreadId };
+    });
+  });
 }
