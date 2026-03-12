@@ -2,19 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasUnseenCompletion,
+  orderThreadsForSidebar,
+  resolveThreadLastChattedAt,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
 } from "./Sidebar.logic";
 
 function makeLatestTurn(overrides?: {
+  requestedAt?: string;
   completedAt?: string | null;
   startedAt?: string | null;
-}): Parameters<typeof hasUnseenCompletion>[0]["latestTurn"] {
+}): NonNullable<Parameters<typeof hasUnseenCompletion>[0]["latestTurn"]> {
   return {
     turnId: "turn-1" as never,
     state: "completed",
     assistantMessageId: null,
-    requestedAt: "2026-03-09T10:00:00.000Z",
+    requestedAt: overrides?.requestedAt ?? "2026-03-09T10:00:00.000Z",
     startedAt: overrides?.startedAt ?? "2026-03-09T10:00:00.000Z",
     completedAt: overrides?.completedAt ?? "2026-03-09T10:05:00.000Z",
   };
@@ -59,6 +62,95 @@ describe("shouldClearThreadSelectionOnMouseDown", () => {
     } as unknown as HTMLElement;
 
     expect(shouldClearThreadSelectionOnMouseDown(unrelated)).toBe(true);
+  });
+});
+
+describe("resolveThreadLastChattedAt", () => {
+  it("prefers latest turn requestedAt over thread creation time", () => {
+    expect(
+      resolveThreadLastChattedAt({
+        id: "thread-1" as never,
+        createdAt: "2026-03-09T09:00:00.000Z",
+        latestTurn: makeLatestTurn(),
+        messages: [],
+      }),
+    ).toBe("2026-03-09T10:00:00.000Z");
+  });
+
+  it("falls back to the latest non-system message when no latest turn exists", () => {
+    expect(
+      resolveThreadLastChattedAt({
+        id: "thread-1" as never,
+        createdAt: "2026-03-09T09:00:00.000Z",
+        latestTurn: null,
+        messages: [
+          {
+            id: "message-1" as never,
+            role: "system",
+            text: "note",
+            createdAt: "2026-03-09T10:01:00.000Z",
+            streaming: false,
+          },
+          {
+            id: "message-2" as never,
+            role: "assistant",
+            text: "reply",
+            createdAt: "2026-03-09T10:02:00.000Z",
+            completedAt: "2026-03-09T10:03:00.000Z",
+            streaming: false,
+          },
+        ],
+      }),
+    ).toBe("2026-03-09T10:03:00.000Z");
+  });
+});
+
+describe("orderThreadsForSidebar", () => {
+  it("keeps pinned threads above newer unpinned threads", () => {
+    const ordered = orderThreadsForSidebar(
+      [
+        {
+          id: "thread-older-pinned" as never,
+          createdAt: "2026-03-09T09:00:00.000Z",
+          latestTurn: makeLatestTurn({ requestedAt: "2026-03-09T09:30:00.000Z" }),
+          messages: [],
+        },
+        {
+          id: "thread-newer" as never,
+          createdAt: "2026-03-09T09:00:00.000Z",
+          latestTurn: makeLatestTurn({ requestedAt: "2026-03-09T10:30:00.000Z" }),
+          messages: [],
+        },
+      ],
+      new Set(["thread-older-pinned" as never]),
+    );
+
+    expect(ordered.map((thread) => thread.id)).toEqual(["thread-older-pinned", "thread-newer"]);
+  });
+
+  it("sorts unpinned threads by last chatted time instead of creation time", () => {
+    const ordered = orderThreadsForSidebar(
+      [
+        {
+          id: "thread-newer-created" as never,
+          createdAt: "2026-03-09T10:00:00.000Z",
+          latestTurn: makeLatestTurn({ requestedAt: "2026-03-09T10:05:00.000Z" }),
+          messages: [],
+        },
+        {
+          id: "thread-older-created-more-recent-chat" as never,
+          createdAt: "2026-03-09T09:00:00.000Z",
+          latestTurn: makeLatestTurn({ requestedAt: "2026-03-09T10:10:00.000Z" }),
+          messages: [],
+        },
+      ],
+      new Set(),
+    );
+
+    expect(ordered.map((thread) => thread.id)).toEqual([
+      "thread-older-created-more-recent-chat",
+      "thread-newer-created",
+    ]);
   });
 });
 

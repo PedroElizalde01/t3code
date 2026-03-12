@@ -21,6 +21,7 @@ import { Debouncer } from "@tanstack/react-pacer";
 export interface AppState {
   projects: Project[];
   threads: Thread[];
+  pinnedThreadIds: ThreadId[];
   threadsHydrated: boolean;
 }
 
@@ -40,6 +41,7 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 const initialState: AppState = {
   projects: [],
   threads: [],
+  pinnedThreadIds: [],
   threadsHydrated: false,
 };
 const persistedExpandedProjectCwds = new Set<string>();
@@ -57,6 +59,7 @@ function readPersistedState(): AppState {
     const parsed = JSON.parse(raw) as {
       expandedProjectCwds?: string[];
       projectOrderCwds?: string[];
+      pinnedThreadIds?: string[];
     };
     for (const cwd of parsed.expandedProjectCwds ?? []) {
       if (typeof cwd === "string" && cwd.length > 0) {
@@ -68,7 +71,17 @@ function readPersistedState(): AppState {
         persistedProjectOrderCwds.push(cwd);
       }
     }
-    return { ...initialState };
+    const pinnedThreadIds: ThreadId[] = [];
+    for (const threadId of parsed.pinnedThreadIds ?? []) {
+      if (
+        typeof threadId === "string" &&
+        threadId.length > 0 &&
+        !pinnedThreadIds.includes(threadId as ThreadId)
+      ) {
+        pinnedThreadIds.push(ThreadId.makeUnsafe(threadId));
+      }
+    }
+    return { ...initialState, pinnedThreadIds };
   } catch {
     return initialState;
   }
@@ -86,6 +99,7 @@ function persistState(state: AppState): void {
           .filter((project) => project.expanded)
           .map((project) => project.cwd),
         projectOrderCwds: state.projects.map((project) => project.cwd),
+        pinnedThreadIds: state.pinnedThreadIds,
       }),
     );
     if (!legacyKeysCleanedUp) {
@@ -115,6 +129,31 @@ function updateThread(
     return updated;
   });
   return changed ? next : threads;
+}
+
+function prunePinnedThreadIds(
+  pinnedThreadIds: readonly ThreadId[],
+  threads: readonly Thread[],
+): ThreadId[] {
+  const validThreadIds = new Set(threads.map((thread) => thread.id));
+  const nextPinnedThreadIds: ThreadId[] = [];
+  for (const threadId of pinnedThreadIds) {
+    if (!validThreadIds.has(threadId) || nextPinnedThreadIds.includes(threadId)) {
+      continue;
+    }
+    nextPinnedThreadIds.push(threadId);
+  }
+  return nextPinnedThreadIds;
+}
+
+function sameThreadIdOrder(left: readonly ThreadId[], right: readonly ThreadId[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function mapProjectsFromReadModel(
@@ -325,10 +364,12 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         activities: thread.activities.map((activity) => ({ ...activity })),
       };
     });
+  const pinnedThreadIds = prunePinnedThreadIds(state.pinnedThreadIds, threads);
   return {
     ...state,
     projects,
     threads,
+    ...(sameThreadIdOrder(pinnedThreadIds, state.pinnedThreadIds) ? {} : { pinnedThreadIds }),
     threadsHydrated: true,
   };
 }
@@ -364,6 +405,31 @@ export function markThreadUnread(state: AppState, threadId: ThreadId): AppState 
     return { ...thread, lastVisitedAt: unreadVisitedAt };
   });
   return threads === state.threads ? state : { ...state, threads };
+}
+
+export function pinThread(state: AppState, threadId: ThreadId): AppState {
+  if (state.pinnedThreadIds.includes(threadId)) {
+    return state;
+  }
+  return {
+    ...state,
+    pinnedThreadIds: [threadId, ...state.pinnedThreadIds],
+  };
+}
+
+export function unpinThread(state: AppState, threadId: ThreadId): AppState {
+  const pinnedThreadIds = state.pinnedThreadIds.filter(
+    (pinnedThreadId) => pinnedThreadId !== threadId,
+  );
+  return pinnedThreadIds.length === state.pinnedThreadIds.length
+    ? state
+    : { ...state, pinnedThreadIds };
+}
+
+export function toggleThreadPinned(state: AppState, threadId: ThreadId): AppState {
+  return state.pinnedThreadIds.includes(threadId)
+    ? unpinThread(state, threadId)
+    : pinThread(state, threadId);
 }
 
 export function toggleProject(state: AppState, projectId: Project["id"]): AppState {
@@ -466,6 +532,9 @@ interface AppStore extends AppState {
   syncServerReadModel: (readModel: OrchestrationReadModel) => void;
   markThreadVisited: (threadId: ThreadId, visitedAt?: string) => void;
   markThreadUnread: (threadId: ThreadId) => void;
+  pinThread: (threadId: ThreadId) => void;
+  unpinThread: (threadId: ThreadId) => void;
+  toggleThreadPinned: (threadId: ThreadId) => void;
   toggleProject: (projectId: Project["id"]) => void;
   setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
   moveProject: (
@@ -484,6 +553,9 @@ export const useStore = create<AppStore>((set) => ({
   markThreadVisited: (threadId, visitedAt) =>
     set((state) => markThreadVisited(state, threadId, visitedAt)),
   markThreadUnread: (threadId) => set((state) => markThreadUnread(state, threadId)),
+  pinThread: (threadId) => set((state) => pinThread(state, threadId)),
+  unpinThread: (threadId) => set((state) => unpinThread(state, threadId)),
+  toggleThreadPinned: (threadId) => set((state) => toggleThreadPinned(state, threadId)),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),

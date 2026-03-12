@@ -3,6 +3,7 @@ import {
   ChevronRightIcon,
   FolderIcon,
   GitPullRequestIcon,
+  PinIcon,
   PlusIcon,
   RocketIcon,
   SettingsIcon,
@@ -83,7 +84,12 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
-import { resolveThreadStatusPill, shouldClearThreadSelectionOnMouseDown } from "./Sidebar.logic";
+import {
+  orderThreadsForSidebar,
+  resolveThreadLastChattedAt,
+  resolveThreadStatusPill,
+  shouldClearThreadSelectionOnMouseDown,
+} from "./Sidebar.logic";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
@@ -270,7 +276,9 @@ function SortableProjectItem({
 export default function Sidebar() {
   const projects = useStore((store) => store.projects);
   const threads = useStore((store) => store.threads);
+  const pinnedThreadIds = useStore((store) => store.pinnedThreadIds);
   const markThreadUnread = useStore((store) => store.markThreadUnread);
+  const toggleThreadPinned = useStore((store) => store.toggleThreadPinned);
   const toggleProject = useStore((store) => store.toggleProject);
   const reorderProjects = useStore((store) => store.reorderProjects);
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearThreadDraft);
@@ -327,6 +335,7 @@ export default function Sidebar() {
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
   const shouldOffsetDesktopBrandingForTrafficLights =
     typeof navigator !== "undefined" && isMacPlatform(navigator.platform);
+  const pinnedThreadIdSet = useMemo(() => new Set(pinnedThreadIds), [pinnedThreadIds]);
   const pendingApprovalByThreadId = useMemo(() => {
     const map = new Map<ThreadId, boolean>();
     for (const thread of threads) {
@@ -491,13 +500,10 @@ export default function Sidebar() {
 
   const focusMostRecentThreadForProject = useCallback(
     (projectId: ProjectId) => {
-      const latestThread = threads
-        .filter((thread) => thread.projectId === projectId)
-        .toSorted((a, b) => {
-          const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-          if (byDate !== 0) return byDate;
-          return b.id.localeCompare(a.id);
-        })[0];
+      const latestThread = orderThreadsForSidebar(
+        threads.filter((thread) => thread.projectId === projectId),
+        pinnedThreadIdSet,
+      )[0];
       if (!latestThread) return;
 
       void navigate({
@@ -505,7 +511,7 @@ export default function Sidebar() {
         params: { threadId: latestThread.id },
       });
     },
-    [navigate, threads],
+    [navigate, pinnedThreadIdSet, threads],
   );
 
   const addProjectFromPath = useCallback(
@@ -774,8 +780,12 @@ export default function Sidebar() {
     async (threadId: ThreadId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
+      const thread = threads.find((t) => t.id === threadId);
+      if (!thread) return;
+      const isPinned = pinnedThreadIds.includes(threadId);
       const clicked = await api.contextMenu.show(
         [
+          { id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin chat" : "Pin chat" },
           { id: "rename", label: "Rename thread" },
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -783,8 +793,11 @@ export default function Sidebar() {
         ],
         position,
       );
-      const thread = threads.find((t) => t.id === threadId);
-      if (!thread) return;
+
+      if (clicked === "pin" || clicked === "unpin") {
+        toggleThreadPinned(threadId);
+        return;
+      }
 
       if (clicked === "rename") {
         setRenamingThreadId(threadId);
@@ -828,7 +841,14 @@ export default function Sidebar() {
       }
       await deleteThread(threadId);
     },
-    [appSettings.confirmThreadDelete, deleteThread, markThreadUnread, threads],
+    [
+      appSettings.confirmThreadDelete,
+      deleteThread,
+      markThreadUnread,
+      pinnedThreadIds,
+      threads,
+      toggleThreadPinned,
+    ],
   );
 
   const handleMultiSelectContextMenu = useCallback(
@@ -1440,21 +1460,20 @@ export default function Sidebar() {
                 strategy={verticalListSortingStrategy}
               >
                 {projects.map((project) => {
-                  const projectThreads = threads
-                    .filter((thread) => thread.projectId === project.id)
-                    .toSorted((a, b) => {
-                      const byDate =
-                        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-                      if (byDate !== 0) return byDate;
-                      return b.id.localeCompare(a.id);
-                    });
+                  const projectThreads = threads.filter(
+                    (thread) => thread.projectId === project.id,
+                  );
+                  const orderedProjectThreads = orderThreadsForSidebar(
+                    projectThreads,
+                    pinnedThreadIdSet,
+                  );
                   const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
-                  const hasHiddenThreads = projectThreads.length > THREAD_PREVIEW_LIMIT;
+                  const hasHiddenThreads = orderedProjectThreads.length > THREAD_PREVIEW_LIMIT;
                   const visibleThreads =
                     hasHiddenThreads && !isThreadListExpanded
-                      ? projectThreads.slice(0, THREAD_PREVIEW_LIMIT)
-                      : projectThreads;
-                  const orderedProjectThreadIds = projectThreads.map((t) => t.id);
+                      ? orderedProjectThreads.slice(0, THREAD_PREVIEW_LIMIT)
+                      : orderedProjectThreads;
+                  const orderedProjectThreadIds = orderedProjectThreads.map((t) => t.id);
 
                   return (
                     <SortableProjectItem key={project.id} projectId={project.id}>
@@ -1523,6 +1542,7 @@ export default function Sidebar() {
                               {visibleThreads.map((thread) => {
                                 const isActive = routeThreadId === thread.id;
                                 const isSelected = selectedThreadIds.has(thread.id);
+                                const isPinned = pinnedThreadIdSet.has(thread.id);
                                 const isHighlighted = isActive || isSelected;
                                 const threadStatus = resolveThreadStatusPill({
                                   thread,
@@ -1597,6 +1617,16 @@ export default function Sidebar() {
                                       }}
                                     >
                                       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                                        {isPinned && (
+                                          <span
+                                            role="img"
+                                            aria-label="Pinned chat"
+                                            title="Pinned chat"
+                                            className="inline-flex items-center justify-center text-amber-500"
+                                          >
+                                            <PinIcon className="size-3 fill-current" />
+                                          </span>
+                                        )}
                                         {prStatus && (
                                           <Tooltip>
                                             <TooltipTrigger
@@ -1697,7 +1727,7 @@ export default function Sidebar() {
                                               : "text-muted-foreground/40"
                                           }`}
                                         >
-                                          {formatRelativeTime(thread.createdAt)}
+                                          {formatRelativeTime(resolveThreadLastChattedAt(thread))}
                                         </span>
                                       </div>
                                     </SidebarMenuSubButton>

@@ -10,8 +10,11 @@ import { describe, expect, it } from "vitest";
 import {
   markThreadUnread,
   moveProject,
+  pinThread,
   reorderProjects,
   syncServerReadModel,
+  toggleThreadPinned,
+  unpinThread,
   type AppState,
 } from "./store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
@@ -52,6 +55,7 @@ function makeState(thread: Thread): AppState {
       },
     ],
     threads: [thread],
+    pinnedThreadIds: [],
     threadsHydrated: true,
   };
 }
@@ -184,6 +188,7 @@ describe("store pure functions", () => {
         },
       ],
       threads: [],
+      pinnedThreadIds: [],
       threadsHydrated: true,
     };
 
@@ -233,12 +238,37 @@ describe("store pure functions", () => {
         },
       ],
       threads: [],
+      pinnedThreadIds: [],
       threadsHydrated: true,
     };
 
     const next = reorderProjects(state, project1, project3);
 
     expect(next.projects.map((project) => project.id)).toEqual([project2, project3, project1]);
+  });
+
+  it("pins and unpins threads without duplicating ids", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const initialState = makeState(makeThread());
+
+    const pinned = pinThread(initialState, threadId);
+    const pinnedAgain = pinThread(pinned, threadId);
+    const unpinned = unpinThread(pinnedAgain, threadId);
+
+    expect(pinned.pinnedThreadIds).toEqual([threadId]);
+    expect(pinnedAgain.pinnedThreadIds).toEqual([threadId]);
+    expect(unpinned.pinnedThreadIds).toEqual([]);
+  });
+
+  it("toggles thread pin state", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const initialState = makeState(makeThread());
+
+    const pinned = toggleThreadPinned(initialState, threadId);
+    const unpinned = toggleThreadPinned(pinned, threadId);
+
+    expect(pinned.pinnedThreadIds).toEqual([threadId]);
+    expect(unpinned.pinnedThreadIds).toEqual([]);
   });
 });
 
@@ -280,6 +310,7 @@ describe("store read model sync", () => {
         },
       ],
       threads: [],
+      pinnedThreadIds: [],
       threadsHydrated: true,
     };
     const readModel: OrchestrationReadModel = {
@@ -308,5 +339,39 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.projects.map((project) => project.id)).toEqual([project2, project1, project3]);
+  });
+
+  it("prunes pinned ids when threads disappear from the read model", () => {
+    const pinnedThreadId = ThreadId.makeUnsafe("thread-1");
+    const initialState: AppState = {
+      projects: [
+        {
+          id: ProjectId.makeUnsafe("project-1"),
+          name: "Project",
+          cwd: "/tmp/project",
+          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          expanded: true,
+          scripts: [],
+        },
+      ],
+      threads: [makeThread({ id: pinnedThreadId })],
+      pinnedThreadIds: [pinnedThreadId],
+      threadsHydrated: true,
+    };
+
+    const next = syncServerReadModel(initialState, {
+      snapshotSequence: 2,
+      updatedAt: "2026-02-27T00:00:00.000Z",
+      projects: [
+        makeReadModelProject({
+          id: ProjectId.makeUnsafe("project-1"),
+          title: "Project",
+          workspaceRoot: "/tmp/project",
+        }),
+      ],
+      threads: [],
+    });
+
+    expect(next.pinnedThreadIds).toEqual([]);
   });
 });
